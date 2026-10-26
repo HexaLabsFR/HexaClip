@@ -1,0 +1,7 @@
+HexaClip 0.1.0 — première version
+
+- Enregistrement automatique quand CS2 est lancé (tampon de 3 min, encodage par la carte graphique)
+- Clips gardés tout seuls sur les 3k, 4k et aces (intégration officielle CS2), touche F9 pour sauver à la main
+- Compil TikTok verticale d'1 min montée à la fermeture du jeu : logo, compteur de kills, map, écran de fin avec l'Elo
+- Suivi Faceit : Elo, niveau, courbe, derniers matchs (K/D, ADR, HS %, Elo gagné ou perdu)
+- Lancement avec Windows, icône dans la barre des tâches, notifications

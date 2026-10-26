@@ -1,0 +1,5 @@
+# Garder les fichiers Windows tels quels
+*.txt -text
+*.ico binary
+*.ttf binary
+*.png binary

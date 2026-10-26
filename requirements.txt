@@ -1,0 +1,5 @@
+# Modules nécessaires à HexaClip
+psutil==6.1.0
+pystray==0.19.5
+Pillow==11.0.0
+PyAudioWPatch>=0.2.12,<0.3; sys_platform == "win32"

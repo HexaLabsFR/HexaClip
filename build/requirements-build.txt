@@ -1,0 +1,2 @@
+# Outils de fabrication de HexaClip.exe
+pyinstaller==6.11.1

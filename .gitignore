@@ -1,0 +1,10 @@
+dist/
+build/work/
+build/version_info.txt
+__pycache__/
+*.pyc
+selftest.txt
+notes.txt
+*.log
+ffmpeg.zip
+ffmpeg_test/
