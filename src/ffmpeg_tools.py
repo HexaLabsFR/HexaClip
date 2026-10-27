@@ -95,7 +95,8 @@ def _pick_asset_url():
 
 
 def download(progress=None):
-    """Télécharge et installe ffmpeg + ffprobe dans le dossier de données. progress(fraction, texte)."""
+    """Télécharge et installe ffmpeg, ffprobe et ffplay (aperçus) dans le dossier de données.
+    progress(fraction, texte)."""
     os.makedirs(local_dir(), exist_ok=True)
     zpath = os.path.join(local_dir(), "ffmpeg.zip")
     last_err = None
@@ -119,10 +120,16 @@ def download(progress=None):
                 found = 0
                 for n in z.namelist():
                     base = os.path.basename(n).lower()
-                    if base in ("ffmpeg.exe", "ffprobe.exe"):
-                        with z.open(n) as src, open(os.path.join(local_dir(), base), "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-                        found += 1
+                    if base in ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe"):
+                        target = os.path.join(local_dir(), base)
+                        try:
+                            with z.open(n) as src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+                            found += 1
+                        except OSError:
+                            # déjà présent et en cours d'utilisation (capture lancée) : on garde l'actuel
+                            if os.path.isfile(target):
+                                found += 1
             os.remove(zpath)
             if found >= 2:
                 if progress:

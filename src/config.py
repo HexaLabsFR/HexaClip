@@ -22,14 +22,14 @@ DEFAULTS = {
     "son": True,
     "decalage_son_ms": 0,            # à ajuster si le son est en avance (+) ou en retard (-)
     "tampon_s": 180,                 # durée gardée en arrière sur le disque
-    # Détection des actions
-    "kills_min": 3,                  # 3 = 3k et plus
+    # Détection des kills
+    "kills_min": 1,                  # 1 = tous les kills (choix ensuite dans Montage), 3 = 3k et plus
     "avant_s": 3.5,                  # secondes gardées avant le premier kill
     "apres_s": 1.8,                  # secondes gardées après le dernier kill
     "touche_manuelle": "F9",         # sauvegarde à la main des dernières secondes
     "duree_manuelle_s": 15,
     # Compils TikTok
-    "compil_auto": True,             # compil à la fermeture de CS2 s'il y a des actions
+    "compil_auto": False,            # compil auto à la fermeture de CS2 (sinon : choix des kills dans Montage)
     "compil_duree_s": 60,
     "compil_ordre": "crescendo",     # crescendo (meilleure à la fin) ou chrono
     "compil_cadrage": "flou",        # flou (jeu entier + fond flou) ou zoom (centre plein écran)
@@ -40,10 +40,13 @@ DEFAULTS = {
     "musique_on": False,
     "musique_dossier": "",           # MP3/WAV libres de droits
     "musique_volume": 0.25,
-    "garder_clips_jours": 30,
+    "garder_clips_jours": 7,         # les favoris sont toujours gardés
     # Windows
     "demarrage_windows": False,
     "premier_lancement_fait": False,
+    # Mises à jour
+    "maj_auto": True,                # vérifier et télécharger les nouvelles versions tout seul
+    "version_reglages": 2,
 }
 
 ENCODEURS = ["auto", "h264_nvenc", "h264_amf", "h264_qsv", "libx264"]
@@ -60,12 +63,22 @@ class Config:
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-            for k, val in saved.items():
-                if k in DEFAULTS and isinstance(val, type(DEFAULTS[k])) or (
-                        k in DEFAULTS and isinstance(DEFAULTS[k], float) and isinstance(val, int)):
-                    self.v[k] = val
         except (OSError, ValueError):
-            pass
+            return
+        for k, val in saved.items():
+            if k in DEFAULTS and isinstance(val, type(DEFAULTS[k])) or (
+                    k in DEFAULTS and isinstance(DEFAULTS[k], float) and isinstance(val, int)):
+                self.v[k] = val
+        if int(saved.get("version_reglages", 1)) < 2:
+            # 0.2 : tous les kills sont gardés et tu choisis toi-même ceux de la compil
+            self.v["kills_min"] = 1
+            self.v["compil_auto"] = False
+            self.v["garder_clips_jours"] = 7
+            self.v["version_reglages"] = 2
+            try:
+                self.save()
+            except OSError:
+                pass
 
     def save(self):
         with self.lock:

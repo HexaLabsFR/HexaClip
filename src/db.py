@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS moments (
     son INTEGER DEFAULT 1,
     favori INTEGER DEFAULT 0,
     exclu INTEGER DEFAULT 0,
-    match_faceit TEXT
+    match_faceit TEXT,
+    kills_hs TEXT,                  -- JSON [true, false…] headshot de chaque kill
+    choix TEXT,                     -- JSON indices des kills choisis pour la compil (NULL = automatique)
+    miniature TEXT,                 -- image PNG du round
+    partie INTEGER                  -- numéro de partie dans la session
 );
 CREATE TABLE IF NOT EXISTS compils (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,6 +55,11 @@ class DB:
         self.c.row_factory = sqlite3.Row
         with self.lock:
             self.c.executescript(SCHEMA)
+            # bases créées par la 0.1 : ajouter les colonnes manquantes
+            have = {r[1] for r in self.c.execute("PRAGMA table_info(moments)")}
+            for col, typ in (("kills_hs", "TEXT"), ("choix", "TEXT"), ("miniature", "TEXT"), ("partie", "INTEGER")):
+                if col not in have:
+                    self.c.execute(f"ALTER TABLE moments ADD COLUMN {col} {typ}")
             self.c.commit()
 
     def _x(self, sql, args=()):
@@ -66,10 +75,10 @@ class DB:
     # --- actions ---------------------------------------------------------
     def add_moment(self, m: dict) -> int:
         cols = ["cree", "session", "carte", "round", "mode", "kills", "hs", "duree_kills", "type", "score",
-                "fichier", "coupes", "kills_t", "son"]
+                "fichier", "coupes", "kills_t", "son", "kills_hs", "miniature", "partie"]
         vals = [m.get(c) for c in cols]
         for i, c in enumerate(cols):
-            if c in ("coupes", "kills_t") and not isinstance(vals[i], str):
+            if c in ("coupes", "kills_t", "kills_hs") and not isinstance(vals[i], str):
                 vals[i] = json.dumps(vals[i] or [])
         cur = self._x(f"INSERT INTO moments ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})", vals)
         return cur.lastrowid
@@ -84,11 +93,31 @@ class DB:
             a.append(session)
         q += " ORDER BY cree DESC LIMIT ?"
         a.append(limit)
-        out = self._all(q, a)
-        for r in out:
-            r["coupes"] = json.loads(r["coupes"] or "[]")
-            r["kills_t"] = json.loads(r["kills_t"] or "[]")
-        return out
+        return [self._decode(r) for r in self._all(q, a)]
+
+    @staticmethod
+    def _decode(r):
+        r["coupes"] = json.loads(r["coupes"] or "[]")
+        r["kills_t"] = json.loads(r["kills_t"] or "[]")
+        r["kills_hs"] = json.loads(r.get("kills_hs") or "[]")
+        r["choix"] = json.loads(r["choix"]) if r.get("choix") is not None else None
+        return r
+
+    def moments_by_ids(self, ids):
+        ids = list(ids)
+        if not ids:
+            return []
+        q = f"SELECT * FROM moments WHERE id IN ({','.join('?' * len(ids))}) ORDER BY cree"
+        return [self._decode(r) for r in self._all(q, ids)]
+
+    def sessions(self, limit=30):
+        """Sessions de jeu (du lancement à la fermeture de CS2), les plus récentes d'abord."""
+        return self._all("SELECT session, MIN(cree) AS debut, MAX(cree) AS fin, COUNT(*) AS rounds, "
+                         "SUM(kills) AS kills FROM moments WHERE session IS NOT NULL GROUP BY session "
+                         "ORDER BY debut DESC LIMIT ?", (limit,))
+
+    def set_choice(self, mid, idx):
+        self._x("UPDATE moments SET choix=? WHERE id=?", (None if idx is None else json.dumps(list(idx)), mid))
 
     def set_moment(self, mid, **kw):
         if not kw:

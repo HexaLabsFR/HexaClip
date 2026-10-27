@@ -22,7 +22,8 @@ from config import Config
 from db import DB
 from faceit import Faceit, FaceitError, outro_lines
 from gsi_cs2 import GSIServer, cfg_installed, install_cfg, pretty_map
-from moments import KillTracker, LABELS, cut_windows, manual_moment
+from moments import (KillTracker, LABELS, auto_choice, build_item, choice_duration, manual_moment,
+                     merge)
 from recorder import Recorder, detect_method
 
 IS_WIN = sys.platform == "win32"
@@ -52,6 +53,35 @@ def log_error(where):
 
 def safe_name(s):
     return re.sub(r"[^A-Za-z0-9_-]+", "", s.replace(" ", "_"))[:40]
+
+
+def _quiet(fn, *a):
+    try:
+        fn(*a)
+    except Exception:
+        log_error("téléchargement en fond")
+
+
+def make_thumb(video, t, png):
+    """Petite image du round (au dernier kill) pour l'onglet Montage."""
+    try:
+        os.makedirs(os.path.dirname(png), exist_ok=True)
+        ff.run([ff.find("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{max(0.0, t):.3f}",
+                "-i", video, "-frames:v", "1", "-vf", "scale=192:108:force_original_aspect_ratio=decrease,"
+                "pad=192:108:-1:-1", png], timeout=30)
+        return png if os.path.isfile(png) else None
+    except Exception:
+        return None
+
+
+def remove_files(m):
+    for k in ("fichier", "miniature"):
+        p = m.get(k)
+        try:
+            if p and os.path.isfile(p):
+                os.remove(p)
+        except OSError:
+            pass
 
 
 class Engine:
@@ -98,6 +128,9 @@ class Engine:
                 self.busy = "Téléchargement du moteur vidéo (une seule fois)…"
                 ff.download(lambda f, t: setattr(self, "busy", t))
             self.busy = ""
+            if IS_WIN and not ff.find("ffplay"):
+                # installé par la 0.1 sans le lecteur d'aperçu : on le complète en fond
+                threading.Thread(target=lambda: _quiet(ff.download), daemon=True).start()
         except Exception as e:
             self.busy = ""
             self.method_error = str(e)
@@ -182,8 +215,15 @@ class Engine:
         self.emit("info", "CS2 fermé.")
         self.recorder.stop(wait_pending=15)
         sid, start = self.session_id, self.session_start
-        if self.cfg["compil_auto"] and self.session_moments > 0:
+        if self.session_moments <= 0:
+            return
+        if self.cfg["compil_auto"]:
             threading.Thread(target=self._auto_compile, args=(sid, start), daemon=True).start()
+        else:
+            ms = self.db.moments(session=sid, limit=1000)
+            kills = sum(m.get("kills") or 0 for m in ms)
+            self.emit("session", f"Session terminée : {kills} kills gardés sur {len(ms)} rounds. "
+                                 "Choisis tes kills dans l'onglet Montage.")
 
     def _auto_compile(self, sid, start):
         # laisser à Faceit le temps de mettre l'Elo à jour
@@ -221,33 +261,40 @@ class Engine:
         if not self.recorder.running:
             log(f"Action {m['type']} non enregistrée : capture arrêtée.")
             return
+        pre, post = float(self.cfg["avant_s"]), float(self.cfg["apres_s"])
         if m.get("fenetre_abs"):
-            wins = [list(m["fenetre_abs"])]
+            per = [list(m["fenetre_abs"])]                     # clip manuel : un seul passage
         else:
-            wins = cut_windows(m["kills_abs"], float(self.cfg["avant_s"]), float(self.cfg["apres_s"]))
-        a, b = wins[0][0] - 0.6, wins[-1][1] + 0.6
+            per = [[k - pre, k + post] for k in m["kills_abs"]]   # un passage par kill
+        keep = merge([[a - 0.6, b + 0.6] for a, b in per])
         day = dt.datetime.fromtimestamp(m["cree"]).strftime("%Y-%m-%d")
-        name = (dt.datetime.fromtimestamp(m["cree"]).strftime("%Hh%M_%S") + "_" + safe_name(m.get("carte") or "CS2")
-                + "_" + m["type"] + ".mp4")
-        out = os.path.join(self.cfg.sub(os.path.join("clips", day)), name)
+        stem = (dt.datetime.fromtimestamp(m["cree"]).strftime("%Hh%M_%S") + "_" + safe_name(m.get("carte") or "CS2")
+                + "_" + m["type"])
+        folder = self.cfg.sub(os.path.join("clips", day))
+        out = os.path.join(folder, stem + ".mp4")
         session = self.session_id
 
-        def done(path, wall0, err):
+        def done(path, to_file, err):
             if not path:
                 self.emit("erreur", f"Clip {m['type']} perdu : {err}")
                 return
             row = dict(m)
             row["fichier"] = path
             row["session"] = session
-            row["coupes"] = [[round(x - wall0, 3), round(y - wall0, 3)] for x, y in wins]
-            row["kills_t"] = [round(k - wall0, 3) for k in m.get("kills_abs", [])]
+            row["coupes"] = [[to_file(a), to_file(b)] for a, b in per]
+            row["kills_t"] = [to_file(k) for k in m.get("kills_abs", [])]
             row["son"] = 1 if self.recorder.has_audio else 0
+            t_img = row["kills_t"][-1] if row["kills_t"] else (row["coupes"][0][0] + row["coupes"][0][1]) / 2
+            row["miniature"] = make_thumb(path, t_img, os.path.join(folder, ".miniatures", stem + ".png"))
             self.db.add_moment(row)
             self.session_moments += 1
             where = f" sur {m['carte']}" if m.get("carte") else ""
-            self.emit("clip", f"{LABELS.get(m['type'], m['type'])}{where} enregistré.")
+            if m["type"] in ("3k", "4k", "ace", "manuel"):
+                self.emit("clip", f"{LABELS.get(m['type'], m['type'])}{where} enregistré.")
+            else:
+                self.events.put(("kill", f"{LABELS.get(m['type'], m['type'])}{where} gardé."))
 
-        self.recorder.save(a, b, out, done)
+        self.recorder.save(keep, out, done)
 
     def manual_clip(self):
         if not self.recorder.running:
@@ -255,7 +302,7 @@ class Engine:
             return
         m = manual_moment(time.time(), float(self.cfg["duree_manuelle_s"]),
                           carte=pretty_map(self.tracker.map),
-                          round_no=self.tracker.round_no)
+                          round_no=self.tracker.round_no, partie=self.tracker.partie)
         self._on_moment(m)
 
     def _start_hotkey(self):
@@ -282,41 +329,61 @@ class Engine:
         self._hotkey.start()
 
     # ------------------------------------------------------------------ compils
-    def compile(self, session=None, since=None, ids=None):
-        """Monte une compil (session, période ou liste d'actions). Renvoie le chemin ou None."""
+    def effective_choice(self, ms, budget):
+        """Kills retenus : ton choix quand tu en as fait un, sinon la sélection automatique."""
+        fixed = {m["id"]: m["choix"] for m in ms if m.get("choix") is not None}
+        used = sum(choice_duration(m, fixed[m["id"]]) for m in ms if m["id"] in fixed)
+        auto = auto_choice([m for m in ms if m["id"] not in fixed], max(0.0, budget - used))
+        return {**auto, **fixed}
+
+    def compile_budget(self, fin=True):
+        return float(self.cfg["compil_duree_s"]) - (montage.OUTRO_S if fin else 0)
+
+    def compile(self, session=None, since=None, ids=None, selection=None):
+        """Monte une compil. selection = {id_action: [indices des kills]} (onglet Montage) ; sinon les kills
+        choisis (ou automatiques) de la session / période. Renvoie le chemin ou None."""
         if not self._compile_lock.acquire(blocking=False):
             self.emit("erreur", "Une compil est déjà en cours.")
             return None
         try:
-            ms = self.db.moments(since=since, session=session, limit=400)
-            if ids:
-                ms = [m for m in self.db.moments(limit=2000) if m["id"] in set(ids)]
-            if not ms:
-                self.emit("info", "Pas d'action à monter pour l'instant.")
-                return None
             fin = None
             if self.cfg["compil_fin_faceit"] and self.faceit.configured():
                 try:
                     fin = outro_lines(self.faceit.session_summary(since or self.session_start or time.time()))
                 except Exception:
                     log_error("résumé Faceit")
-            budget = float(self.cfg["compil_duree_s"]) - (montage.OUTRO_S if fin else 0)
-            chosen = montage.select(ms, budget, self.cfg["compil_ordre"])
-            if not chosen:
-                self.emit("info", "Les clips de cette période sont introuvables sur le disque.")
+            if selection is not None:
+                ms = self.db.moments_by_ids(selection.keys())
+                choice = {int(k): v for k, v in selection.items()}
+            else:
+                ms = self.db.moments_by_ids(ids) if ids else self.db.moments(since=since, session=session, limit=400)
+                choice = self.effective_choice(ms, self.compile_budget(bool(fin)))
+            items = [build_item(m, choice.get(m["id"], [])) for m in ms
+                     if choice.get(m["id"]) and m.get("fichier") and os.path.isfile(m["fichier"])]
+            items = [it for it in items if it["coupes"]]
+            if not items:
+                self.emit("info", "Aucun kill choisi (ou fichiers introuvables) : rien à monter.")
                 return None
+            order = self.cfg["compil_ordre"]
+            if order == "chrono":
+                items.sort(key=lambda m: m["cree"])
+            elif order == "meilleure_d_abord":
+                items.sort(key=lambda m: (m.get("favori", 0), m.get("score", 0)), reverse=True)
+            else:
+                items.sort(key=lambda m: (m.get("favori", 0), m.get("score", 0)))
             enc = (self.method or {}).get("encodeur", "libx264")
             opts = {
                 "cadrage": self.cfg["compil_cadrage"], "badges": self.cfg["compil_badges"],
                 "texte": self.cfg["compil_texte"].strip(),
                 "logo": self.cfg["compil_logo"] if os.path.isfile(self.cfg["compil_logo"] or "") else None,
-                "fin": fin, "encodeur": enc if enc != "libx264" else "libx264",
+                "fin": fin, "encodeur": enc,
                 "musique": montage.pick_music(self.cfg["musique_dossier"]) if self.cfg["musique_on"] else None,
                 "musique_volume": float(self.cfg["musique_volume"]),
             }
-            self.busy = f"Montage de la compil ({len(chosen)} actions)…"
-            out, dur = montage.make(chosen, self.cfg.sub("compils"), opts, log=log)
-            self.db.add_compil(out, dur, [m["id"] for m in chosen], session)
+            n_kills = sum(len(it.get("kills_t") or []) for it in items)
+            self.busy = f"Montage de la compil ({n_kills} kills)…"
+            out, dur = montage.make(items, self.cfg.sub("compils"), opts, log=log)
+            self.db.add_compil(out, dur, [m["id"] for m in items], session)
             self.emit("compil", f"Compil prête : {os.path.basename(out)} ({dur:.0f} s)")
             return out
         except Exception as e:
@@ -353,24 +420,15 @@ class Engine:
         n = 0
         for m in self.db.moments(limit=5000):
             if m["cree"] < limit and not m.get("favori"):
-                try:
-                    if m.get("fichier") and os.path.isfile(m["fichier"]):
-                        os.remove(m["fichier"])
-                    self.db.delete_moment(m["id"])
-                    n += 1
-                except OSError:
-                    pass
+                remove_files(m)
+                self.db.delete_moment(m["id"])
+                n += 1
         if n:
             log(f"Ménage : {n} clips de plus de {days} jours supprimés (les favoris sont gardés).")
 
     def delete_moment(self, mid):
-        for m in self.db.moments(limit=5000):
-            if m["id"] == mid:
-                try:
-                    if m.get("fichier") and os.path.isfile(m["fichier"]):
-                        os.remove(m["fichier"])
-                except OSError:
-                    pass
+        for m in self.db.moments_by_ids([mid]):
+            remove_files(m)
         self.db.delete_moment(mid)
 
     # ------------------------------------------------------------------ état

@@ -19,7 +19,7 @@ import webbrowser
 import paths
 from gsi_cs2 import pretty_map
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 APP, BRAND = paths.APP, paths.BRAND
 IS_WIN = sys.platform == "win32"
 
@@ -78,6 +78,7 @@ class Tray:
                 pystray.MenuItem("Créer la compil maintenant", lambda: app.call(app.compile_now)),
                 pystray.MenuItem("Sauvegarder les dernières secondes", lambda: app.engine.manual_clip()),
                 pystray.MenuItem("Ouvrir le dossier des vidéos", lambda: open_path(app.engine.cfg.video_dir())),
+                pystray.MenuItem("Rechercher une mise à jour", lambda: app.call(app.check_update)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Quitter", lambda: app.call(app.quit)),
             )
@@ -105,7 +106,7 @@ class Tray:
 # Fenêtre
 # ----------------------------------------------------------------------------
 class App:
-    TABS = ["Accueil", "Clips", "Compils", "Faceit", "Réglages"]
+    TABS = ["Accueil", "Montage", "Clips", "Compils", "Faceit", "Réglages"]
 
     def __init__(self, engine, hidden=False):
         import tkinter as tk
@@ -129,8 +130,15 @@ class App:
                          ("*Button.borderWidth", 0)):
             self.root.option_add(opt, val)
         self._style()
+        self.scrollers = {}
+        self.root.bind_all("<MouseWheel>", self._wheel)
+        self.root.bind_all("<Button-4>", lambda e: self._wheel(e, -120))
+        self.root.bind_all("<Button-5>", lambda e: self._wheel(e, 120))
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
         self.events_log = []
+        import updater
+        self.updater = updater.Updater(VERSION, on_change=lambda u: self.call(self._on_update),
+                                       log=__import__("engine").log)
         self.tray = Tray(self)
         self.told_tray = False
         self._build()
@@ -138,6 +146,13 @@ class App:
             self.root.withdraw()
         self.root.after(400, self._poll)
         self.root.after(1500, self._first_run)
+        self.root.after(20_000, self._auto_update_tick)
+
+    def _wheel(self, e, delta=None):
+        cv = self.scrollers.get(self.current)
+        if cv is not None:
+            d = delta if delta is not None else -e.delta
+            cv.yview_scroll(int(d / 120) or (1 if d > 0 else -1), "units")
 
     # ------------------------------------------------------------- style
     def _style(self):
@@ -196,6 +211,7 @@ class App:
         self.label(top, f"  v{VERSION} · {BRAND}", 9, "muted").pack(side="left", pady=(6, 0))
         self.pill = self.label(top, "", 10, "muted")
         self.pill.pack(side="right")
+        self.upd_btn = self.button(top, "", self.restart_update, primary=True)   # visible quand une MàJ est prête
 
         bar = tk.Frame(self.root, bg=C["bg"])
         bar.pack(fill="x", padx=24)
@@ -210,7 +226,8 @@ class App:
         self.body = tk.Frame(self.root, bg=C["bg"])
         self.body.pack(fill="both", expand=True, padx=24, pady=16)
         self.pages = {
-            "Accueil": self._page_home(), "Clips": self._page_clips(), "Compils": self._page_compils(),
+            "Accueil": self._page_home(), "Montage": self._page_montage(), "Clips": self._page_clips(),
+            "Compils": self._page_compils(),
             "Faceit": self._page_faceit(), "Réglages": self._page_settings(),
         }
         self.current = None
@@ -223,8 +240,8 @@ class App:
             self.pages[self.current].pack_forget()
         self.pages[name].pack(fill="both", expand=True)
         self.current = name
-        {"Clips": self.refresh_clips, "Compils": self.refresh_compils, "Faceit": self.refresh_faceit_tab}.get(
-            name, lambda: None)()
+        {"Clips": self.refresh_clips, "Compils": self.refresh_compils, "Faceit": self.refresh_faceit_tab,
+         "Montage": self.refresh_montage}.get(name, lambda: None)()
 
     # ------------------------------------------------------------- Accueil
     def _page_home(self):
@@ -336,6 +353,244 @@ class App:
             row.pack(fill="x", pady=2)
             self.label(row, dt.datetime.fromtimestamp(t).strftime("%H:%M"), 9, "muted").pack(side="left")
             self.label(row, tx, 10, colors.get(k, "fg"), wraplength=900, justify="left").pack(side="left", padx=10)
+
+    # ------------------------------------------------------------- Montage (choix des kills)
+    def _page_montage(self):
+        tk, ttk = self.tk, self.ttk
+        f = tk.Frame(self.body, bg=C["bg"])
+        head = tk.Frame(f, bg=C["bg"])
+        head.pack(fill="x", pady=(0, 10))
+        self.label(head, "Choisis tes kills", 14, "fg", True).pack(side="left")
+        self.mt_period = tk.StringVar()
+        self.mt_combo = ttk.Combobox(head, textvariable=self.mt_period, width=40, state="readonly")
+        self.mt_combo.pack(side="left", padx=14)
+        self.mt_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_montage(keep_period=True))
+        self.button(head, "Tout décocher", lambda: self._mt_all(False)).pack(side="right")
+        self.button(head, "Tout cocher", lambda: self._mt_all(True)).pack(side="right", padx=8)
+        self.button(head, "Sélection auto", self._mt_auto).pack(side="right")
+
+        outer = tk.Frame(f, bg=C["bg"])
+        outer.pack(fill="both", expand=True)
+        cv = tk.Canvas(outer, bg=C["bg"], highlightthickness=0)
+        sb = ttk.Scrollbar(outer, orient="vertical", command=cv.yview)
+        self.mt_list = tk.Frame(cv, bg=C["bg"])
+        self.mt_list.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        win = cv.create_window((0, 0), window=self.mt_list, anchor="nw")
+        cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
+        cv.configure(yscrollcommand=sb.set)
+        cv.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.scrollers["Montage"] = cv
+
+        foot = self.card(f)
+        foot.pack(fill="x", pady=(12, 0))
+        self.mt_count = self.label(foot, "", 12, "fg", True, bg="panel")
+        self.mt_count.pack(side="left", padx=16, pady=12)
+        self.mt_hint = self.label(foot, "", 9, "muted", bg="panel")
+        self.mt_hint.pack(side="left")
+        self.button(foot, "Créer la compil", self._mt_compile, primary=True).pack(side="right", padx=12, pady=10)
+        self.button(foot, "Voir la sélection", self._mt_preview_all).pack(side="right")
+        self.mt_sel, self.mt_moments, self.mt_imgs, self.mt_chips = {}, [], [], {}
+        return f
+
+    def _mt_periods(self):
+        out = []
+        for s in self.engine.db.sessions(30):
+            k = s.get("kills") or 0
+            d = fmt_date(s["debut"])
+            quand = ("d'" + d) if d.startswith(("aujourd'hui", "hier")) else ("du " + d)
+            out.append((f"Session {quand} · {k} kill{'s' if k > 1 else ''}", ("session", s["session"])))
+        out.append(("Dernières 24 h", ("since", 1)))
+        out.append(("7 derniers jours", ("since", 7)))
+        return out
+
+    def refresh_montage(self, keep_period=False):
+        from moments import all_indices
+        periods = self._mt_periods()
+        self.mt_period_map = dict(periods)
+        labels = [p[0] for p in periods]
+        self.mt_combo.configure(values=labels)
+        if not keep_period or self.mt_period.get() not in self.mt_period_map:
+            self.mt_period.set(labels[0])
+        kind, val = self.mt_period_map[self.mt_period.get()]
+        db = self.engine.db
+        if kind == "session":
+            ms = db.moments(session=val, limit=1000)
+        else:
+            ms = db.moments(since=time.time() - val * 86400, limit=1000)
+        ms = [m for m in ms if m.get("fichier") and os.path.isfile(m["fichier"])]
+        ms.sort(key=lambda m: m["cree"])
+        self.mt_moments = ms
+        auto = self.engine.effective_choice(ms, self.engine.compile_budget(self._fin_on()))
+        self.mt_sel = {m["id"]: set(auto.get(m["id"], [])) & set(all_indices(m)) for m in ms}
+        self._mt_render()
+
+    def _fin_on(self):
+        return bool(self.cfg["compil_fin_faceit"] and self.engine.faceit.configured())
+
+    def _mt_render(self):
+        from moments import LABELS, all_indices, per_kill
+        tk = self.tk
+        for w in self.mt_list.winfo_children():
+            w.destroy()
+        self.mt_imgs, self.mt_chips = [], {}
+        if not self.mt_moments:
+            self.label(self.mt_list, "Aucun kill sur cette période. Lance CS2 : chaque kill est gardé tout seul, "
+                                     "puis tu choisis ici ceux qui vont dans la compil.", 11, "muted",
+                       wraplength=800, justify="left").pack(anchor="w", pady=20)
+            self._mt_update_count()
+            return
+        last_group = None
+        for m in self.mt_moments:
+            group = (m.get("session"), m.get("partie"), m.get("carte"))
+            if group != last_group:
+                last_group = group
+                hdr = tk.Frame(self.mt_list, bg=C["bg"])
+                hdr.pack(fill="x", pady=(14, 6))
+                title = (m.get("carte") or "Partie") + f" · {fmt_date(m['cree'])}"
+                self.label(hdr, title.upper(), 9, "accent", True).pack(side="left")
+                fm = self._match_for(m)
+                if fm:
+                    res = {1: "victoire", 0: "défaite"}.get(fm.get("victoire"), "")
+                    self.label(hdr, f"  Faceit {fm.get('score') or ''} {res}", 9, "muted").pack(side="left")
+            row = self.card(self.mt_list)
+            row.pack(fill="x", pady=4)
+            img = None
+            if m.get("miniature") and os.path.isfile(m["miniature"]):
+                try:
+                    img = tk.PhotoImage(file=m["miniature"])
+                    self.mt_imgs.append(img)
+                except Exception:
+                    img = None
+            th = tk.Label(row, image=img, bg=C["raise"], width=192 if img else 24, height=108 if img else 6,
+                          cursor="hand2")
+            th.pack(side="left", padx=10, pady=10)
+            th.bind("<Button-1>", lambda e, m=m: self._mt_preview(m))
+            info = tk.Frame(row, bg=C["panel"])
+            info.pack(side="left", padx=(4, 12), anchor="n", pady=12)
+            line = tk.Frame(info, bg=C["panel"])
+            line.pack(anchor="w")
+            self.label(line, f"Round {m['round']}" if m.get("round") else "Clip", 12, "fg", True,
+                       bg="panel").pack(side="left")
+            big = m["type"] in ("3k", "4k", "ace")
+            tk.Label(line, text=LABELS.get(m["type"], m["type"]), bg=C["accent"] if big else C["raise"],
+                     fg=C["on_accent"] if big else C["soft"], font=(FONT, 9, "bold"), padx=8, pady=1).pack(
+                side="left", padx=8)
+            if m.get("favori"):
+                self.label(line, "★", 12, "warn", bg="panel").pack(side="left")
+            hs = sum(1 for x in (m.get("kills_hs") or []) if x)
+            sub = f"{dt.datetime.fromtimestamp(m['cree']):%H:%M}" + (f" · {hs} HS" if hs else "")
+            self.label(info, sub, 9, "muted", bg="panel").pack(anchor="w", pady=(2, 8))
+            chips = tk.Frame(info, bg=C["panel"])
+            chips.pack(anchor="w")
+            hs_list = m.get("kills_hs") or []
+            for i in all_indices(m):
+                if per_kill(m):
+                    txt = f"Kill {i + 1}" + (" · HS" if i < len(hs_list) and hs_list[i] else "")
+                else:
+                    txt = "Clip entier" if m["type"] == "manuel" else "Round entier"
+                b = tk.Label(chips, text=txt, font=(FONT, 10, "bold"), padx=12, pady=6, cursor="hand2")
+                b.pack(side="left", padx=(0, 6))
+                b.bind("<Button-1>", lambda e, mid=m["id"], i=i: self._mt_toggle(mid, i))
+                b.bind("<Button-3>", lambda e, m=m, i=i: self._mt_preview(m, [i]))
+                self.mt_chips[(m["id"], i)] = b
+            side = tk.Frame(row, bg=C["panel"])
+            side.pack(side="right", padx=12)
+            self.button(side, "▶ Voir", lambda m=m: self._mt_preview(m), bg="panel").pack(pady=(0, 6))
+            self.button(side, "★" if not m.get("favori") else "Retirer ★",
+                        lambda m=m: self._mt_fav(m), bg="panel").pack()
+        self._mt_paint()
+
+    def _match_for(self, m):
+        if not m.get("match_faceit"):
+            return None
+        if not hasattr(self, "_mcache") or time.time() - self._mcache[0] > 30:
+            self._mcache = (time.time(), {x["match_id"]: x for x in self.engine.db.matchs(200)})
+        return self._mcache[1].get(m["match_faceit"])
+
+    def _mt_paint(self):
+        for (mid, i), b in self.mt_chips.items():
+            on = i in self.mt_sel.get(mid, set())
+            b.configure(bg=C["accent"] if on else C["raise"], fg=C["on_accent"] if on else C["muted"])
+        self._mt_update_count()
+
+    def _mt_update_count(self):
+        from moments import choice_duration
+        n_kills, dur = 0, 0.0
+        for m in self.mt_moments:
+            idx = sorted(self.mt_sel.get(m["id"], set()))
+            if idx:
+                dur += choice_duration(m, idx)
+                n_kills += len(idx) if m.get("kills_t") else 0
+        target = self.engine.compile_budget(self._fin_on())
+        over = dur > target + 0.5
+        self.mt_count.configure(text=f"Sélection : {n_kills} kill{'s' if n_kills > 1 else ''} · {dur:.0f} s / "
+                                     f"{target:.0f} s", fg=C["warn"] if over else C["fg"])
+        self.mt_hint.configure(text=("Plus long que la durée choisie : la compil sera plus longue."
+                                     if over else "Clic sur un kill pour l'ajouter ou l'enlever · clic droit "
+                                                  "pour le revoir"))
+
+    def _mt_save(self):
+        for m in self.mt_moments:
+            self.engine.db.set_choice(m["id"], sorted(self.mt_sel.get(m["id"], set())))
+
+    def _mt_toggle(self, mid, i):
+        s = self.mt_sel.setdefault(mid, set())
+        s.symmetric_difference_update({i})
+        self._mt_save()
+        self._mt_paint()
+
+    def _mt_all(self, on):
+        from moments import all_indices
+        for m in self.mt_moments:
+            self.mt_sel[m["id"]] = set(all_indices(m)) if on else set()
+        self._mt_save()
+        self._mt_paint()
+
+    def _mt_auto(self):
+        for m in self.mt_moments:
+            self.engine.db.set_choice(m["id"], None)
+            m["choix"] = None
+        auto = self.engine.effective_choice(self.mt_moments, self.engine.compile_budget(self._fin_on()))
+        self.mt_sel = {m["id"]: set(auto.get(m["id"], [])) for m in self.mt_moments}
+        self._mt_paint()
+
+    def _mt_fav(self, m):
+        self.engine.db.set_moment(m["id"], favori=0 if m.get("favori") else 1)
+        m["favori"] = 0 if m.get("favori") else 1
+        self._mt_render()
+
+    def _mt_preview(self, m, idx=None):
+        """Revoit le round (ou les kills donnés) avec ffplay, sinon le lecteur vidéo de Windows."""
+        from moments import kill_windows, merge, per_kill
+        import ffmpeg_tools as ff
+        wins = kill_windows(m)
+        if idx is not None and per_kill(m):
+            wins = [wins[i] for i in idx]
+        wins = merge(wins) or [[0, 0]]
+        a, b = wins[0][0], wins[-1][1]
+        play = ff.find("ffplay")
+        if play and b > a:
+            ff.popen([play, "-hide_banner", "-loglevel", "error", "-autoexit", "-x", "1280", "-y", "720",
+                      "-window_title", f"HexaClip · Round {m.get('round') or ''}", "-ss", f"{max(0, a):.2f}",
+                      "-t", f"{b - a:.2f}", m["fichier"]], creationflags=0)
+        else:
+            open_path(m["fichier"])
+
+    def _mt_preview_all(self):
+        first = next((m for m in self.mt_moments if self.mt_sel.get(m["id"])), None)
+        if first:
+            self._mt_preview(first, sorted(self.mt_sel[first["id"]]))
+
+    def _mt_compile(self):
+        sel = {m["id"]: sorted(self.mt_sel.get(m["id"], set())) for m in self.mt_moments
+               if self.mt_sel.get(m["id"])}
+        if not sel:
+            self.mt_hint.configure(text="Coche au moins un kill.", fg=C["warn"])
+            return
+        self._mt_save()
+        threading.Thread(target=self.engine.compile, kwargs={"selection": sel}, daemon=True).start()
+        self.mt_hint.configure(text="Montage en cours… la compil apparaîtra dans l'onglet Compils.", fg=C["accent"])
 
     # ------------------------------------------------------------- Clips
     def _tree(self, parent, cols, heights=14):
@@ -596,8 +851,7 @@ class App:
         cv.configure(yscrollcommand=sb.set)
         cv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        cv.bind_all("<MouseWheel>", lambda e: cv.yview_scroll(int(-e.delta / 120), "units")
-                    if self.current == "Réglages" else None)
+        self.scrollers["Réglages"] = cv
         self.vars = {}
 
         def section(title, note=""):
@@ -683,8 +937,9 @@ class App:
         self.button(r, "Réinstaller la liaison CS2", self._install_gsi).pack(side="left", padx=8)
 
         section("Actions gardées")
-        row("Garder à partir de", combo("kills_min", [2, 3, 4, 5], 18, ["2 kills", "3 kills (3k)", "4 kills (4k)",
-                                                                       "Ace seulement"]))
+        row("Garder", combo("kills_min", [1, 2, 3, 4, 5], 18, ["Tous les kills", "Rounds à 2 kills et +",
+                                                               "3k et +", "4k et +", "Aces seulement"]),
+            "tu choisis ensuite dans l'onglet Montage")
         row("Secondes avant le 1er kill", entry("avant_s", 8))
         row("Secondes après le dernier kill", entry("apres_s", 8))
         row("Touche « sauver maintenant »", combo("touche_manuelle", ["F9", "F8", "F10", "F11", "F7", "F6", ""], 18,
@@ -694,7 +949,8 @@ class App:
                                                 ["10 s", "15 s", "20 s", "30 s"]))
 
         section("Compils TikTok")
-        row("Monter la compil à la fermeture de CS2", check("compil_auto"))
+        row("Compil toute seule à la fermeture de CS2", check("compil_auto"),
+            "sinon tu choisis tes kills dans Montage")
         row("Durée", combo("compil_duree_s", [30, 45, 60, 90], 18, ["30 s", "45 s", "1 min", "1 min 30"]))
         row("Ordre", combo("compil_ordre", ["crescendo", "meilleure_d_abord", "chrono"], 18,
                            ["Meilleure à la fin", "Meilleure d'abord", "Chronologique"]))
@@ -709,6 +965,16 @@ class App:
         row("Dossier des musiques", folder("musique_dossier", "Dossier de musiques"))
         row("Volume de la musique", combo("musique_volume", [0.15, 0.25, 0.4, 0.6], 18,
                                           ["Discret", "Moyen", "Fort", "Très fort"]))
+
+        section("Mises à jour", "Comme HexaRise : vérification au démarrage puis toutes les 4 h, téléchargement en "
+                                "fond, puis bouton Redémarrer. Rien à retélécharger à la main.")
+        row("Mises à jour automatiques", check("maj_auto"))
+        r = tk.Frame(f, bg=C["bg"])
+        r.pack(fill="x", pady=4)
+        self.button(r, "Rechercher maintenant", self.check_update).pack(side="left")
+        self.upd_install = self.button(r, "Redémarrer et installer", self.restart_update, primary=True)
+        self.upd_msg = self.label(r, f"Version installée : {VERSION}", 10, "muted")
+        self.upd_msg.pack(side="left", padx=12)
 
         section("Windows")
         row("Lancer HexaClip avec Windows", check("demarrage_windows"), "démarre discrètement dans la barre des tâches")
@@ -838,10 +1104,12 @@ class App:
             while True:
                 kind, text = self.engine.events.get_nowait()
                 self._add_event(kind, text)
-                if kind in ("clip", "compil", "erreur"):
+                if kind in ("clip", "compil", "erreur", "session"):
                     self.tray.notify(text)
-                if kind == "clip" and self.current == "Clips":
+                if kind in ("clip", "kill") and self.current == "Clips":
                     self.refresh_clips()
+                if kind == "session" and self.current == "Montage":
+                    self.refresh_montage()
                 if kind == "compil" and self.current == "Compils":
                     self.refresh_compils()
                 if kind == "faceit" and self.current == "Faceit":
@@ -871,7 +1139,48 @@ class App:
     def quit(self):
         self.tray.stop()
         self.engine.shutdown()
+        if self.updater.state == "ready":       # comme HexaRise : installée en quittant
+            self.updater.install(restart=False)
         self.root.destroy()
+
+    # ------------------------------------------------------------- mises à jour
+    def _auto_update_tick(self):
+        if self.cfg["maj_auto"] and self.updater.state != "ready":
+            threading.Thread(target=self.updater.check, daemon=True).start()
+        self.root.after(4 * 3600 * 1000, self._auto_update_tick)
+
+    def check_update(self):
+        self.upd_msg.configure(text="Recherche de mise à jour…", fg=C["muted"])
+        threading.Thread(target=self.updater.check, daemon=True).start()
+
+    def _on_update(self):
+        u = self.updater
+        col = {"ready": "accent", "error": "warn", "uptodate": "good"}.get(u.state, "muted")
+        self.upd_msg.configure(text=u.message, fg=C[col])
+        if u.state == "ready":
+            self.upd_btn.configure(text=f"Mise à jour {u.version} · Redémarrer")
+            self.upd_btn.pack(side="right", padx=12)
+            self.upd_install.pack(side="left", padx=8, before=self.upd_msg)
+            self.tray.notify(f"Mise à jour {u.version} prête : clique sur Redémarrer dans HexaClip.")
+        else:
+            self.upd_btn.pack_forget()
+            self.upd_install.pack_forget()
+
+    def restart_update(self):
+        from tkinter import messagebox
+        if self.updater.state != "ready":
+            return
+        if self.engine.recorder.running and not messagebox.askyesno(
+                APP, "CS2 est en cours d'enregistrement. Redémarrer HexaClip maintenant pour installer la mise à jour ?"):
+            return
+        self.tray.stop()
+        self.engine.shutdown()
+        if self.updater.install(restart=True):
+            self.root.destroy()
+            return
+        messagebox.showerror(APP, self.updater.message)
+        self.engine.start()
+        self.tray = Tray(self)
 
     def run(self):
         self.root.mainloop()
@@ -880,16 +1189,25 @@ class App:
 # ----------------------------------------------------------------------------
 # Lancement
 # ----------------------------------------------------------------------------
-def _single_instance():
+def _single_instance(wait_s=0):
+    """Une seule HexaClip à la fois. wait_s : attendre que l'ancienne version se ferme (après une MàJ)."""
     if not IS_WIN:
         return True
     try:
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         k32.CreateMutexW.restype = ctypes.c_void_p
         k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
-        h = k32.CreateMutexW(None, False, "Local\\HexaLabs.HexaClip")
-        globals()["_MUTEX"] = h
-        return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        end = time.time() + wait_s
+        while True:
+            h = k32.CreateMutexW(None, False, "Local\\HexaLabs.HexaClip")
+            if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
+                globals()["_MUTEX"] = h
+                return True
+            k32.CloseHandle(h)
+            if time.time() > end:
+                return False
+            time.sleep(0.5)
     except Exception:
         return True
 
@@ -901,6 +1219,7 @@ def main():
     ap.add_argument("--out", help="fichier de sortie pour --selftest (l'exe n'a pas de console)")
     ap.add_argument("--version", action="store_true")
     ap.add_argument("--discret", action="store_true", help="démarrer caché dans la barre des tâches")
+    ap.add_argument("--apres-maj", action="store_true", help="relancé par la mise à jour")
     args, _ = ap.parse_known_args()
     if args.selftest or args.version:
         import io
@@ -912,7 +1231,7 @@ def main():
             if args.selftest:
                 import importlib
                 for mod in ("psutil", "pystray", "PIL", "config", "db", "engine", "faceit", "ffmpeg_tools",
-                            "gsi_cs2", "moments", "montage", "recorder", "selftest") + \
+                            "gsi_cs2", "moments", "montage", "recorder", "selftest", "updater") + \
                         (("pyaudiowpatch",) if IS_WIN else ()):
                     try:
                         m = importlib.import_module(mod)
@@ -941,7 +1260,7 @@ def main():
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
         pass
-    if not _single_instance():
+    if not _single_instance(wait_s=20 if args.apres_maj else 0):
         ctypes.windll.user32.MessageBoxW(None, "HexaClip est déjà ouvert (regarde dans la barre des tâches, "
                                                "près de l'horloge).", APP, 0x40)
         return
@@ -951,9 +1270,13 @@ def main():
         pass
     FONT = paths.load_brand_font() or FONT
     from engine import Engine, log_error, LOG_PATH
+    import updater
+    threading.Thread(target=updater.cleanup_after_update, daemon=True).start()
     try:
         engine = Engine()
         engine.start()
+        if args.apres_maj:
+            engine.emit("info", f"HexaClip est à jour : version {VERSION}.")
         App(engine, hidden=args.discret).run()
     except Exception:
         log_error("Démarrage")

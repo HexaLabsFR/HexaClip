@@ -297,23 +297,24 @@ class Recorder:
                 pass
             return list(self._seg_lines)
 
-    # --- sauvegarde d'un passage ------------------------------------------
-    def save(self, wall_a, wall_b, out_path, done):
-        """Sauvegarde [wall_a, wall_b] (heures murales) dans out_path, en tâche de fond.
-        done(chemin | None, debut_fichier_mural, erreur)."""
+    # --- sauvegarde de passages -----------------------------------------
+    def save(self, windows, out_path, done):
+        """Sauvegarde un ou plusieurs passages [[debut, fin], …] (heures murales) dans un seul MP4, en tâche
+        de fond. done(chemin | None, vers_fichier, erreur) ; vers_fichier(heure murale) -> seconde dans le fichier."""
         self.pending += 1
-        threading.Thread(target=self._save, args=(wall_a, wall_b, out_path, done), daemon=True).start()
+        threading.Thread(target=self._save, args=(windows, out_path, done), daemon=True).start()
 
-    def _save(self, wall_a, wall_b, out_path, done):
+    def _save(self, windows, out_path, done):
         try:
-            res = self._save_inner(wall_a, wall_b, out_path)
-            done(*res)
+            done(*self._save_inner(windows, out_path))
         except Exception as e:
-            done(None, 0.0, str(e))
+            done(None, None, str(e))
         finally:
             self.pending -= 1
 
-    def _save_inner(self, wall_a, wall_b, out_path):
+    def _save_inner(self, windows, out_path):
+        windows = sorted([float(a), float(b)] for a, b in windows)
+        wall_b = max(b for _, b in windows)
         # attendre que le morceau qui contient la fin soit écrit
         deadline = max(wall_b, time.time()) + SEG_S * 3 + 6
         segs, off = [], None
@@ -326,28 +327,37 @@ class Recorder:
                 break
             time.sleep(0.25)
         if off is None or not segs:
-            return None, 0.0, "aucune image enregistrée (capture arrêtée ?)"
-        sa, sb = wall_a - off, wall_b - off
-        chosen = [s for s in segs if s[2] > sa and s[1] < sb]
+            return None, None, "aucune image enregistrée (capture arrêtée ?)"
+        # morceaux qui touchent au moins un passage, dans l'ordre, sans doublon
+        chosen, seen = [], set()
+        for s in segs:
+            key = round(s[1], 2)
+            if key in seen:
+                continue
+            if any(s[2] > a - off and s[1] < b - off for a, b in windows):
+                chosen.append(s)
+                seen.add(key)
         if not chosen:
-            return None, 0.0, "passage plus ancien que le tampon"
-        # garder une suite continue (le tampon tourne : un même nom peut revenir)
-        run = [chosen[-1]]
-        for s in reversed(chosen[:-1]):
-            if abs(s[2] - run[0][1]) < 0.6:
-                run.insert(0, s)
-            else:
-                break
+            return None, None, "passage plus ancien que le tampon"
         tmp = out_path + ".parts"
         os.makedirs(tmp, exist_ok=True)
         lst = os.path.join(tmp, "liste.txt")
+        table, pos = [], 0.0   # (début flux, fin flux, position dans le fichier)
         with open(lst, "w", encoding="utf-8") as f:
-            for i, (name, _, _) in enumerate(run):
+            for i, (name, s0, s1) in enumerate(chosen):
                 dst = os.path.join(tmp, f"{i:03d}.ts")
                 shutil.copyfile(os.path.join(self.buf_dir, name), dst)
-                f.write(f"file '{dst.replace(os.sep, '/')}'\n")
+                f.write(f"file '{dst.replace(os.sep, '/')}'\nduration {s1 - s0:.6f}\n")
+                table.append((s0, s1, pos))
+                pos += s1 - s0
         ff.run([ff.find("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
                 "-i", lst, "-c", "copy", "-bsf:a", "aac_adtstoasc", "-avoid_negative_ts", "make_zero",
                 "-movflags", "+faststart", out_path], timeout=120, check=True)
         shutil.rmtree(tmp, ignore_errors=True)
-        return out_path, run[0][1] + off, ""
+
+        def to_file(wall):
+            st = wall - off
+            best = min(table, key=lambda r: 0 if r[0] <= st <= r[1] else min(abs(st - r[0]), abs(st - r[1])))
+            s0, s1, p = best
+            return round(p + min(max(st, s0), s1) - s0, 3)
+        return out_path, to_file, ""
