@@ -5,7 +5,7 @@ name: Construire et publier HexaClip
 
 on:
   push:
-    branches: [main]
+    branches: [main, "correctif-*"]
   workflow_dispatch:
 
 permissions:
@@ -63,7 +63,8 @@ jobs:
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_test
           $bin = (Get-ChildItem -Path ffmpeg_test -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
           "HEXACLIP_FFMPEG=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          & "$bin\ffmpeg.exe" -hide_banner -filters | Select-String "ddagrab|drawtext|gblur"
+          & "$bin\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
+          & "$bin\ffmpeg.exe" -hide_banner -filters | Select-String "ddagrab|drawtext|gblur|xfade|rgbashift|fillborders"
 
       - name: Vérifier l'exe
         shell: pwsh
@@ -72,7 +73,7 @@ jobs:
           $p = Start-Process -FilePath "dist\HexaClip.exe" -ArgumentList "--selftest","--out","selftest.txt" -Wait -PassThru
           Get-Content selftest.txt -Encoding utf8
           # lignes en échec remontées en annotations (lisibles sans ouvrir le journal)
-          Get-Content selftest.txt -Encoding utf8 | Where-Object { $_ -match "ERREUR|MANQUANTE|Bilan|Traceback|Error" } | Select-Object -First 9 | ForEach-Object {
+          Get-Content selftest.txt -Encoding utf8 | Where-Object { $_ -match "ERREUR|MANQUANTE|Bilan|Traceback|Error|@ 0|Parsed_|refus" } | Select-Object -First 40 | ForEach-Object {
             $l = $_ -replace '%', '%25' -replace "`r", '' ; if ($l -match "Bilan") { Write-Host "::notice::$l" } else { Write-Host "::error::$l" } }
           if ($p.ExitCode -ne 0) { Write-Error "Code de sortie $($p.ExitCode)"; exit 1 }
           $t = Get-Content selftest.txt -Raw -Encoding utf8
@@ -85,7 +86,7 @@ jobs:
           path: dist/HexaClip.exe
 
       - name: Publier la version (GitHub Release)
-        if: steps.v.outputs.nouvelle == 'true'
+        if: steps.v.outputs.nouvelle == 'true' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.v.outputs.version }}

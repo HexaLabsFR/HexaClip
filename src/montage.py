@@ -494,6 +494,6 @@ def _make(chosen, out, opts, log):
         r = ff.run(cmd, timeout=900)
         if r.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 10000:
             return out, total
-        last = (r.stderr or b"").decode("utf-8", "ignore")[-1200:]
-        log(f"Montage avec {e} refusé : {last.strip()[-300:]}")
+        last = (r.stderr or b"").decode("utf-8", "ignore")[-3000:]
+        log(f"Montage avec {e} refusé :\n{last.strip()[-1500:]}")
     raise RuntimeError(f"Le montage a échoué :\n{last}")
