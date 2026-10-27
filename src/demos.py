@@ -4,23 +4,21 @@ Clips à partir d'une démo CS2 (Faceit, matchmaking…).
 
 1. Analyse : l'outil analyse_demo (Go, livré dans HexaClip) lit la démo, même compressée (.dem.zst de
    Faceit), et donne la map, les joueurs, les rounds et chaque kill avec son tick.
-2. Lecture : CS2 est piloté par sa console réseau (option de lancement -netconport). Pour chaque
-   groupe de kills choisi : pause, saut au bon tick, caméra verrouillée sur le joueur, reprise.
-3. Enregistrement : la capture habituelle de HexaClip tourne pendant la lecture ; les passages des
-   kills sont gardés comme pour une partie en direct (mêmes clips, mêmes miniatures, onglet Montage).
-
-L'heure de chaque kill est calculée depuis la reprise de la lecture ; si CS2 envoie aussi les kills
-par la liaison (GSI) pendant la démo, ce sont ces heures-là qui sont prises (plus précises).
+2. Rendu : CS2 est lancé avec le module de CS Demo Manager (licence MIT, AkiVer), qui exécute des
+   commandes au tick près : saut au round, caméra sur le joueur, puis « startmovie » qui fait
+   calculer la vidéo image par image par le jeu (60 i/s) avec son propre son (fichier WAV).
+   Pas de capture d'écran : CS2 n'a pas besoin d'être au premier plan, le son du PC n'est pas mêlé,
+   et la barre de lecture de la démo est masquée (demo_ui_mode 0). CS2 se ferme tout seul à la fin.
+3. Encodage : les images + le son de chaque passage deviennent un clip MP4, rangé comme un clip
+   enregistré en direct (onglet Montage / Clips).
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import socket
 import subprocess
 import sys
-import threading
 import time
 
 import paths
@@ -29,11 +27,12 @@ from gsi_cs2 import pretty_map
 from moments import kill_type, score
 
 IS_WIN = sys.platform == "win32"
-NETCON_PORT = 2121
 STEAM_ID_BASE = 76561197960265728
 CS2_APPID = "730"
 SETTLE_S = 3.0          # temps laissé à CS2 après un saut dans la démo
 GAP_SPLIT_S = 12.0      # au-delà, deux kills du même round sont lus séparément (saut entre les deux)
+CACHE_V = 2             # format de l'analyse (2 : identifiant de joueur dans la démo)
+FPS = 60                # images par seconde du rendu
 DEMO_EXT = (".dem", ".dem.zst", ".dem.gz", ".dem.bz2", ".zst", ".gz", ".bz2")
 
 
@@ -61,7 +60,7 @@ def _work_dir():
 
 def _key(path):
     st = os.stat(path)
-    return hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:16]
+    return hashlib.sha1(f"v{CACHE_V}|{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:16]
 
 
 def analyse(path, timeout=300):
@@ -170,153 +169,10 @@ def cleanup(max_files=3):
 
 
 # ----------------------------------------------------------------------------
-# Console réseau de CS2
+# CS2 et son dossier
 # ----------------------------------------------------------------------------
-class Netcon:
-    def __init__(self, port=NETCON_PORT):
-        self.port = port
-        self.sock = None
-        self.lines = []
-        self._lock = threading.Lock()
-
-    def connect(self, timeout=2.0):
-        try:
-            s = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
-        except OSError:
-            return False
-        s.settimeout(None)
-        self.sock = s
-        threading.Thread(target=self._read, daemon=True).start()
-        return True
-
-    def _read(self):
-        buf = b""
-        try:
-            while self.sock:
-                data = self.sock.recv(4096)
-                if not data:
-                    break
-                buf += data
-                *done, buf = buf.split(b"\n")
-                with self._lock:
-                    self.lines.extend(x.decode("utf-8", "ignore").rstrip() for x in done)
-                    self.lines = self.lines[-400:]
-        except OSError:
-            pass
-        self.sock = None
-
-    def send(self, cmd):
-        if not self.sock:
-            raise DemoError("CS2 ne répond plus.")
-        try:
-            self.sock.sendall((cmd + "\n").encode("utf-8"))
-        except OSError:
-            self.sock = None
-            raise DemoError("CS2 ne répond plus.")
-
-    @property
-    def alive(self):
-        return self.sock is not None
-
-    def close(self):
-        s, self.sock = self.sock, None
-        if s:
-            try:
-                s.close()
-            except OSError:
-                pass
-
-
-# ----------------------------------------------------------------------------
-# Pilotage de CS2 sous Windows : fichier .cfg + touche Arrêt défil
-# ----------------------------------------------------------------------------
-# La console réseau (-netconport) ne marche pas dans CS2 sous Windows (sauf avec les outils du Workshop).
-# HexaClip lance donc CS2 avec « +exec hexaclip_demo » : ce fichier associe la touche Arrêt défil
-# (Scroll Lock, jamais utilisée en jeu) à « exec hexaclip_cmd ». Pour envoyer des commandes, HexaClip
-# écrit hexaclip_cmd.cfg puis appuie sur cette touche dans la fenêtre de CS2.
-KEY_NAME = "SCROLLLOCK"
-CMD_CFG, INIT_CFG, DEMO_NAME = "hexaclip_cmd", "hexaclip_demo", "hexaclip_demo"
-
-
-def press_key():
-    """Appuie sur Arrêt défil dans la fenêtre de CS2 (mise au premier plan si besoin)."""
-    import ctypes
-    from ctypes import wintypes
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-
-    class KEYBDINPUT(ctypes.Structure):
-        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
-                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
-
-    class MOUSEINPUT(ctypes.Structure):
-        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
-                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
-
-    class _U(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
-
-    class INPUT(ctypes.Structure):
-        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
-
-    def send(vk, scan, flags):
-        i = INPUT(type=1)
-        i.u.ki = KEYBDINPUT(vk, scan, flags, 0, 0)
-        user32.SendInput(1, ctypes.byref(i), ctypes.sizeof(INPUT))
-
-    hwnd = user32.FindWindowW(None, "Counter-Strike 2")
-    if hwnd and user32.GetForegroundWindow() != hwnd:
-        send(0x12, 0, 0)               # Alt : autorise la mise au premier plan
-        send(0x12, 0, 2)
-        user32.ShowWindow(hwnd, 9)
-        user32.SetForegroundWindow(hwnd)
-        time.sleep(0.15)
-    send(0x91, 0x46, 0x8)              # Arrêt défil (code de touche matériel), appui
-    time.sleep(0.04)
-    send(0x91, 0x46, 0x8 | 0x2)        # relâché
-    return bool(hwnd)
-
-
-class CfgConsole:
-    """Envoie des commandes à CS2 par hexaclip_cmd.cfg + touche."""
-
-    def __init__(self, cfg_dir):
-        self.cfg_dir = cfg_dir
-        self.alive = True
-
-    def send(self, *cmds):
-        path = os.path.join(self.cfg_dir, CMD_CFG + ".cfg")
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(cmds) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        press_key()
-        time.sleep(0.12)
-
-    def close(self):
-        # la touche reste associée tant que CS2 tourne : on y laisse une commande sans effet
-        try:
-            with open(os.path.join(self.cfg_dir, CMD_CFG + ".cfg"), "w", encoding="utf-8") as f:
-                f.write("cl_draw_only_deathnotices 0\n")
-        except OSError:
-            pass
-
-
-class NetconConsole:
-    """Console réseau (CS2 lancé avec -netconport et les outils du Workshop, ou tests)."""
-
-    def __init__(self, nc):
-        self.nc = nc
-
-    @property
-    def alive(self):
-        return self.nc.alive
-
-    def send(self, *cmds):
-        for c in cmds:
-            self.nc.send(c)
-
-    def close(self):
-        self.nc.close()
+PLUGIN_DIR = "hexaclip"          # dossier ajouté à CS2 (game/csgo/hexaclip) le temps du rendu
+SEQ_PREFIX = "hexaclip_s"
 
 
 def steam_exe():
@@ -331,52 +187,15 @@ def steam_exe():
         return None
 
 
-_launched = {"pid": None}          # CS2 lancé par HexaClip en mode démo (touche déjà associée)
-
-
-def cs2_pid():
-    try:
-        import psutil
-        return next((p.pid for p in psutil.process_iter(["name"]) if (p.info.get("name") or "").lower() == "cs2.exe"),
-                    None)
-    except Exception:
-        return None
-
-
-def cs2_in_demo_mode():
-    pid = cs2_pid()
-    return bool(pid) and pid == _launched["pid"]
-
-
-def place_demo(dem, csgo_dir):
-    """Copie la démo dans le dossier du jeu sous un nom libre (l'ancienne peut être encore ouverte par CS2)."""
-    import shutil
-    for name in (DEMO_NAME, DEMO_NAME + "_b"):
-        target = os.path.join(csgo_dir, name + ".dem")
-        try:
-            if os.path.isfile(target):
-                os.remove(target)
-            shutil.copyfile(dem, target)
-            return name
-        except OSError:
-            continue
-    raise DemoError("Impossible de copier la démo dans le dossier de CS2.")
-
-
-def write_init_cfg(cfg_dir, settings=(), name=DEMO_NAME):
-    lines = [f'bind "{KEY_NAME}" "exec {CMD_CFG}"', *settings, f"playdemo {name}"]
-    with open(os.path.join(cfg_dir, INIT_CFG + ".cfg"), "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
-
-
-def launch_cs2_demo():
-    """Lance CS2 en exécutant hexaclip_demo.cfg (association de la touche + lecture de la démo)."""
-    exe = steam_exe()
-    args = ["-applaunch", CS2_APPID, "-novid", "+exec", INIT_CFG]
-    if not exe:
-        return False
-    subprocess.Popen([exe] + args, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
-    return True
+def cs2_dirs():
+    """(dossier game/csgo, cs2.exe) ou (None, None)."""
+    from gsi_cs2 import find_cs2_cfg_dir
+    cfg = find_cs2_cfg_dir()
+    if not cfg:
+        return None, None
+    csgo = os.path.dirname(cfg)
+    exe = os.path.join(os.path.dirname(csgo), "bin", "win64", "cs2.exe")
+    return csgo, exe if os.path.isfile(exe) else None
 
 
 def cs2_alive():
@@ -398,11 +217,163 @@ def kill_cs2(wait=20):
         pass
 
 
+def plugin_path():
+    p = paths.res("bin", "cs2", "server.dll")
+    return p if os.path.isfile(p) else None
+
+
+def install_plugin(csgo):
+    """Ajoute le module à CS2 (dossier + ligne dans gameinfo.gi). Le module remet gameinfo.gi d'origine dès
+    son chargement, et HexaClip le fait aussi après le rendu."""
+    import shutil
+    src = plugin_path()
+    if not src:
+        raise DemoError("Module de rendu CS2 absent de cette version.")
+    for sub in (("bin",), ("bin", "win64")):
+        d = os.path.join(csgo, PLUGIN_DIR, *sub)
+        os.makedirs(d, exist_ok=True)
+        shutil.copyfile(src, os.path.join(d, "server.dll"))
+    gi = os.path.join(csgo, "gameinfo.gi")
+    with open(gi, encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+    line = f"Game\tcsgo/{PLUGIN_DIR}"
+    if line not in content:
+        shutil.copyfile(gi, gi + ".backup")
+        new = content.replace("Game\tcsgo", f"{line}\n\t\t\tGame\tcsgo", 1)
+        if new == content:
+            raise DemoError("gameinfo.gi de CS2 au format inattendu.")
+        with open(gi, "w", encoding="utf-8", newline="") as f:
+            f.write(new)
+
+
+def restore_gameinfo(csgo):
+    gi = os.path.join(csgo, "gameinfo.gi")
+    bak = gi + ".backup"
+    try:
+        if os.path.isfile(bak):
+            with open(bak, "rb") as f:
+                data = f.read()
+            if f"csgo/{PLUGIN_DIR}".encode() not in data:
+                with open(gi, "wb") as f:
+                    f.write(data)
+                os.remove(bak)
+        else:
+            with open(gi, encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            line = f"Game\tcsgo/{PLUGIN_DIR}\n\t\t\t"
+            if line in content:
+                with open(gi, "w", encoding="utf-8", newline="") as f:
+                    f.write(content.replace(line, "", 1))
+    except OSError:
+        pass
+
+
+def plugin_log(csgo):
+    return os.path.join(os.path.dirname(csgo), "bin", "win64", "csdm.log")
+
+
 # ----------------------------------------------------------------------------
-# Lecture + enregistrement
+# Fichier de commandes au tick près (lu par le module au lancement de la démo)
+# ----------------------------------------------------------------------------
+SETUP = ["sv_cheats 1", "volume 1", "demo_ui_mode 0", "cl_hud_telemetry_frametime_show 0",
+         "cl_hud_telemetry_net_misdelivery_show 0", "cl_hud_telemetry_ping_show 0",
+         "cl_hud_telemetry_serverrecvmargin_graph_show 0", "cl_trueview_show_status 0", "r_show_build_info 0",
+         "cl_demo_predict 1", "cl_draw_only_deathnotices 1", "spec_show_xray 0", "snd_mute_losefocus 0",
+         "engine_no_focus_sleep 0", "tv_listen_voice_indices 0", "tv_listen_voice_indices_h 0",
+         f"host_framerate {FPS}"]
+
+
+def sequences_for(rounds, tickrate, pre, post, slot):
+    """[(nom, tick_debut, tick_fin, round, [kills])] : un passage par groupe de kills proches."""
+    out, n = [], 0
+    for r in rounds:
+        for a, b, ks in segments(r["kills"], tickrate, pre, post):
+            n += 1
+            out.append((f"{SEQ_PREFIX}{n:02d}", max(2, a), b, r, ks))
+    return out
+
+
+def actions_json(seqs, tickrate, slot):
+    """Contenu du fichier <démo>.json : une séquence d'actions {tick, cmd} par passage (format CS Demo Manager)."""
+    tr = int(round(tickrate or 64))
+    data = []
+    for i, (name, a, b, r, ks) in enumerate(seqs):
+        setup = max(1, a - tr)
+        acts = [{"tick": 1, "cmd": c} for c in SETUP]
+        acts.append({"tick": max(1, a - 4), "cmd": "pause_playback"})       # évite l'écran de chargement
+        acts.append({"tick": 1, "cmd": f"demo_gototick {max(1, setup - 1)}"})
+        for t in (setup, a - 2):
+            acts.append({"tick": max(1, t), "cmd": "spec_mode 1"})
+            acts.append({"tick": max(1, t), "cmd": f"spec_player {slot}"})
+        acts.append({"tick": a, "cmd": f"startmovie {name} jpg wav"})
+        acts.append({"tick": b, "cmd": "endmovie"})
+        last = i == len(seqs) - 1
+        acts.append({"tick": b + tr, "cmd": "quit" if last else "go_to_next_sequence"})
+        data.append({"actions": sorted(acts, key=lambda x: x["tick"])})
+    return data
+
+
+def find_movie_files(csgo, name):
+    """(images triées, fichier son ou None) écrits par « startmovie name » sous game/csgo
+    (images dans csgo/hexaclip/movie, son dans csgo/movie depuis la mise à jour « Armory »)."""
+    roots = [os.path.join(csgo, PLUGIN_DIR, "movie"), os.path.join(csgo, "movie"), os.path.join(csgo, PLUGIN_DIR), csgo]
+    imgs, wav = [], None
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        found = []
+        for fn in os.listdir(root):
+            low = fn.lower()
+            if not low.startswith(name.lower()):
+                continue
+            rest = low[len(name):]
+            if low.endswith((".jpg", ".jpeg", ".tga")) and rest.split(".")[0].isdigit():
+                found.append(os.path.join(root, fn))
+            elif low.endswith(".wav") and wav is None:
+                wav = os.path.join(root, fn)
+        if found and not imgs:
+            imgs = sorted(found)
+    return imgs, wav
+
+
+def encode_movie(imgs, wav, out_path, encoder="libx264", fps=FPS):
+    """Images + son de startmovie → MP4 H.264 + AAC. Renvoie la durée."""
+    import re
+    first = os.path.basename(imgs[0])
+    m = re.match(r"^(.*?)(\d+)(\.\w+)$", first)
+    if not m:
+        raise DemoError("Images de la démo introuvables.")
+    pattern = os.path.join(os.path.dirname(imgs[0]), f"{m.group(1)}%0{len(m.group(2))}d{m.group(3)}")
+    cmd = [ff.find("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-framerate", str(fps),
+           "-start_number", str(int(m.group(2))), "-i", pattern]
+    if wav:
+        cmd += ["-i", wav]
+    cmd += ["-map", "0:v"] + (["-map", "1:a", "-c:a", "aac", "-b:a", "192k", "-shortest"] if wav else [])
+    if encoder == "h264_nvenc":
+        cmd += ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v", "0"]
+    elif encoder == "h264_amf":
+        cmd += ["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "19", "-qp_p", "19"]
+    elif encoder == "h264_qsv":
+        cmd += ["-c:v", "h264_qsv", "-global_quality", "19"]
+    else:
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
+    cmd += ["-pix_fmt", "yuv420p", "-g", str(fps), "-movflags", "+faststart", out_path]
+    r = ff.run(cmd, timeout=1800)
+    if r.returncode != 0 and encoder != "libx264":
+        return encode_movie(imgs, wav, out_path, "libx264", fps)
+    if r.returncode != 0:
+        raise DemoError("Encodage impossible : " + (r.stderr or b"").decode("utf-8", "ignore")[-200:])
+    return len(imgs) / float(fps)
+
+
+# ----------------------------------------------------------------------------
+# Rendu complet
 # ----------------------------------------------------------------------------
 class DemoClipper:
-    """Pilote CS2 et appelle engine._on_moment pour chaque groupe de kills, comme en direct."""
+    """Fait calculer les passages choisis par CS2 puis range les clips comme des clips en direct."""
+
+    STEPS = {"préparation": 0.0, "préparation de la démo": 0.02, "lancement de CS2": 0.05,
+             "chargement de la démo": 0.08}
 
     def __init__(self, engine, info, steamid, rounds, log=print):
         self.e = engine
@@ -410,63 +381,25 @@ class DemoClipper:
         self.steamid = str(steamid)
         self.rounds = rounds
         self.log = log
-        self.nc = Netcon()
         self.cancelled = False
         self.state = "préparation"
-        self.done_n = 0
-        self.total = sum(len(segments(r["kills"], info.get("tickrate"), 0, 0)) for r in rounds)
-        # avancement : étapes de départ (fixes) puis temps de lecture des passages
-        tr = float(info.get("tickrate") or 64)
-        pre, post = float(engine.cfg["avant_s"]), float(engine.cfg["apres_s"])
-        self.play_total = sum((b - a) / tr + SETTLE_S for r in rounds
-                              for a, b, _ in segments(r["kills"], tr, pre, post)) or 1.0
-        self.play_done = 0.0
-        self._seg_start = None
-        self._seg_len = 0.0
-        self._t_start = time.time()
         self.error = ""
-        self._gsi_kills = []          # heures murales des kills vus par la liaison CS2 pendant la lecture
-        self._last_rk = None
-        self.gsi_map = ""
-        self.gsi_player = ""
+        self.tr = float(info.get("tickrate") or 64)
+        self.pre, self.post = float(engine.cfg["avant_s"]), float(engine.cfg["apres_s"])
+        j = next((j for j in info.get("joueurs", []) if j["steamid"] == self.steamid), {})
+        self.slot = int(j.get("userid", -1)) + 1
+        self.seqs = sequences_for(rounds, self.tr, self.pre, self.post, self.slot)
+        self.total = len(self.seqs)
+        self.done_n = 0            # passages filmés par CS2
+        self.encoded_n = 0         # passages encodés
         self.session = "demo-" + os.path.basename(info.get("fichier", "demo")).split(".")[0][-24:]
+        self.csgo = None
+        self.proc_started = None
 
-    # --- liaison CS2 pendant la démo -------------------------------------
+    # compat. ancienne liaison CS2 (plus utilisée pour le rendu)
     def on_gsi(self, payload, t):
-        mp = payload.get("map") or {}
-        if mp.get("name"):
-            self.gsi_map = mp["name"]
-        pl = payload.get("player") or {}
-        if pl.get("steamid"):
-            self.gsi_player = str(pl["steamid"])
-        if str(pl.get("steamid", "")) != self.steamid:
-            self._last_rk = None
-            return
-        rk = (pl.get("state") or {}).get("round_kills")
-        if isinstance(rk, int):
-            if self._last_rk is not None and rk > self._last_rk:
-                self._gsi_kills.extend([t] * (rk - self._last_rk))
-            self._last_rk = rk
+        pass
 
-    # --- avancement (barre de chargement) ----------------------------------
-    STEPS = {"préparation": 0.0, "préparation de la démo": 0.01, "lancement de CS2": 0.03,
-             "chargement de la démo": 0.06}
-    PLAY_FROM = 0.12
-
-    def progress(self):
-        """(fraction 0..1, secondes restantes estimées ou None)."""
-        if self.state == "terminé":
-            return 1.0, 0
-        if self.state in self.STEPS:
-            return self.STEPS[self.state], None
-        cur = 0.0
-        if self._seg_start is not None:
-            cur = min(self._seg_len, time.time() - self._seg_start)
-        done = min(self.play_total, self.play_done + cur)
-        frac = self.PLAY_FROM + (1 - self.PLAY_FROM) * done / self.play_total
-        return min(0.99, frac), max(0, int(self.play_total - done))
-
-    # --- déroulé -----------------------------------------------------------
     def cancel(self):
         self.cancelled = True
 
@@ -478,111 +411,82 @@ class DemoClipper:
         end = time.time() + s
         while time.time() < end:
             self._check()
-            time.sleep(0.05)
+            time.sleep(0.1)
 
-    SETTINGS = ("demo_timescale 1", "cl_draw_only_deathnotices 1", "spec_show_xray 0")
+    def progress(self):
+        if self.state == "terminé":
+            return 1.0, 0
+        if self.state in self.STEPS:
+            return self.STEPS[self.state], None
+        n = max(1, self.total)
+        frac = 0.1 + 0.7 * self.done_n / n + 0.2 * self.encoded_n / n
+        left = int(sum((b - a) / self.tr * 1.5 + 4 for _, a, b, _, _ in self.seqs[self.done_n:]) + 6 * (n - self.encoded_n))
+        return min(0.99, frac), left
 
-    def _wait_map(self, want, timeout):
-        end = time.time() + timeout
-        while time.time() < end and self.gsi_map != want:
-            self._sleep(1)
-        return self.gsi_map == want
-
-    def _open_cs2(self, dem):
-        """Prépare le pilotage de CS2 et lance la lecture de la démo. Renvoie la console."""
-        want = self.info.get("carte", "")
-        # 1) console réseau disponible (CS2 lancé avec les outils du Workshop, ou tests)
-        if self.nc.connect():
-            ctl = NetconConsole(self.nc)
-            self.state = "chargement de la démo"
-            ctl.send(f'playdemo "{dem}"')
-            self._wait_map(want, 120)
-            return ctl
-        if not IS_WIN:
-            raise DemoError("Lecture des démos disponible sous Windows uniquement.")
-        from gsi_cs2 import find_cs2_cfg_dir
-        cfg_dir = find_cs2_cfg_dir()
-        if not cfg_dir:
-            raise DemoError("Dossier de CS2 introuvable.")
-        if cs2_alive() and not cs2_in_demo_mode():
-            raise DemoError("CS2 est ouvert sans le mode démo. Ferme CS2 : HexaClip le relancera lui-même.")
-        # la démo est copiée dans le dossier du jeu (CS2 lit les démos de son dossier csgo)
-        name = place_demo(dem, os.path.dirname(cfg_dir))
-        ctl = CfgConsole(cfg_dir)
-        write_init_cfg(cfg_dir, self.SETTINGS, name)
-        self.state = "chargement de la démo"
-        # 2) CS2 déjà ouvert par une démo précédente : la touche est déjà associée
-        if cs2_alive():
-            self.gsi_map = ""
-            ctl.send(f"exec {INIT_CFG}")
-            if self._wait_map(want, 60):
-                return ctl
-            raise DemoError("CS2 ne répond pas : ferme CS2, HexaClip le relancera en mode démo.")
-        # 3) lancement de CS2 avec « +exec hexaclip_demo »
-        self.state = "lancement de CS2"
-        if not launch_cs2_demo():
-            raise DemoError("Steam introuvable.")
-        end = time.time() + 120
-        while time.time() < end and not cs2_alive():
-            self._sleep(1)
-        if not cs2_alive():
-            raise DemoError("CS2 ne s'est pas lancé (vérifie Steam).")
-        _launched["pid"] = cs2_pid()
-        self.state = "chargement de la démo"
-        if not self._wait_map(want, 240):
-            self.log("Démo : la liaison CS2 n'a pas confirmé le chargement, on continue.")
-        return ctl
+    def _watch_log(self, logf):
+        """Compte les passages lancés par le module (lignes « Executing: startmovie »)."""
+        try:
+            with open(logf, encoding="utf-8", errors="ignore") as f:
+                txt = f.read()
+            n = txt.count("Executed: endmovie")
+            if n > self.done_n:
+                self.done_n = min(n, self.total)
+            if "Executing: startmovie" in txt and self.state == "chargement de la démo":
+                self.state = f"rendu du passage 1/{self.total}"
+            if self.done_n and self.done_n < self.total:
+                self.state = f"rendu du passage {self.done_n + 1}/{self.total}"
+        except OSError:
+            pass
 
     def run(self):
-        e, tr = self.e, float(self.info.get("tickrate") or 64)
-        pre, post = float(e.cfg["avant_s"]), float(e.cfg["apres_s"])
-        ctl = None
+        e = self.e
+        csgo = None
         try:
+            if not self.seqs:
+                raise DemoError("Aucun round choisi.")
+            if self.slot <= 0:
+                raise DemoError("Joueur introuvable dans la démo.")
             self.state = "préparation de la démo"
-            dem = prepare_dem(self.info["fichier"])
-            ctl = self._open_cs2(dem)
-            # la capture tourne pendant la lecture (même si la capture auto est coupée)
-            end = time.time() + 20
-            while not e.recorder.running and time.time() < end:
-                self._sleep(1)
-            if not e.recorder.running and (not e.method or not e.start_recording()):
-                raise DemoError("La capture ne démarre pas (voir Accueil).")
-            self._sleep(5)                       # fin du chargement (textures, son)
-            ctl.send(*self.SETTINGS, "demo_pause")
-            acc = int(self.steamid) - STEAM_ID_BASE if self.steamid.isdigit() else 0
-            nom = next((j["nom"] for j in self.info.get("joueurs", []) if j["steamid"] == self.steamid), "")
-            cam = [f"spec_lock_to_accountid {acc}"] if acc else []
-            if nom:
-                cam.append(f'spec_player "{nom}"')
-            for r in self.rounds:
+            dem = os.path.abspath(prepare_dem(self.info["fichier"]))
+            csgo, exe = cs2_dirs()
+            if not csgo or not exe:
+                raise DemoError("CS2 introuvable sur ce PC.")
+            self.csgo = csgo
+            if cs2_alive():
+                raise DemoError("CS2 est ouvert : ferme-le, HexaClip le relance en mode rendu.")
+            # nettoyage d'un rendu précédent
+            for d in (os.path.join(csgo, PLUGIN_DIR, "movie"), os.path.join(csgo, "movie")):
+                for fn in (os.listdir(d) if os.path.isdir(d) else []):
+                    if fn.lower().startswith(SEQ_PREFIX):
+                        try:
+                            os.remove(os.path.join(d, fn))
+                        except OSError:
+                            pass
+            with open(dem + ".json", "w", encoding="utf-8") as f:
+                json.dump(actions_json(self.seqs, self.tr, self.slot), f)
+            install_plugin(csgo)
+            logf = plugin_log(csgo)
+            try:
+                os.remove(logf)
+            except OSError:
+                pass
+            self.state = "lancement de CS2"
+            args = [exe, "-insecure", "-novid", "-console", "+playdemo", dem]
+            proc = subprocess.Popen(args, cwd=os.path.dirname(exe))
+            self.proc_started = time.time()
+            self.state = "chargement de la démo"
+            limit = time.time() + 240 + sum((b - a) / self.tr * 4 + 20 for _, a, b, _, _ in self.seqs)
+            while proc.poll() is None:
                 self._check()
-                times = []
-                for a, b, ks in segments(r["kills"], tr, pre, post):
-                    self._check()
-                    self.state = f"round {r['round']} ({self.done_n + 1}/{self.total})"
-                    self._seg_len = (b - a) / tr + SETTLE_S
-                    self._seg_start = time.time()
-                    ctl.send("demo_pause", f"demo_gototick {a}", "demo_pause")
-                    self._sleep(SETTLE_S * 0.5)
-                    if cam:
-                        ctl.send(*cam)
-                    self._sleep(SETTLE_S * 0.5)
-                    if self.gsi_player and self.gsi_player != self.steamid and cam:
-                        ctl.send(*cam)                     # caméra pas encore sur le joueur : on insiste
-                        self._sleep(0.5)
-                    self._gsi_kills, self._last_rk = [], None
-                    w0 = time.time()
-                    ctl.send("demo_resume")
-                    self._sleep((b - a) / tr)
-                    ctl.send("demo_pause")
-                    calc = [w0 + (k["tick"] - a) / tr for k in ks]
-                    seen = [t for t in self._gsi_kills if w0 <= t <= w0 + (b - a) / tr + 1]
-                    ok = len(seen) == len(ks) and all(abs(x - y) < 1.5 for x, y in zip(seen, calc))
-                    times += seen if ok else calc
-                    self.done_n += 1
-                    self.play_done += self._seg_len
-                    self._seg_start = None
-                self._clip(r, r["kills"], times)      # un clip par round, comme en direct
+                self._watch_log(logf)
+                if time.time() > limit:
+                    proc.terminate()
+                    raise DemoError("Le rendu dans CS2 a pris trop de temps (arrêté).")
+                time.sleep(1)
+            self._watch_log(logf)
+            self.done_n = self.total
+            self.state = "encodage des clips"
+            self._encode_all()
             self.state = "terminé"
         except DemoError as ex:
             self.error = str(ex)
@@ -591,33 +495,76 @@ class DemoClipper:
             self.error = f"{type(ex).__name__} : {ex}"
             self.state = "erreur"
         finally:
-            try:
-                if ctl is not None and ctl.alive:
-                    ctl.send("cl_draw_only_deathnotices 0", "demo_pause")
-            except Exception:
-                pass
-            if ctl is not None:
-                ctl.close()
-            self.nc.close()
+            if self.cancelled and cs2_alive() and self.proc_started:
+                kill_cs2()
+            if csgo:
+                restore_gameinfo(csgo)
             cleanup()
 
-    def _clip(self, r, ks, times):
-        hs = [bool(k.get("hs")) for k in ks]
-        span = times[-1] - times[0] if times else 0
-        m = {
-            "cree": times[0],
-            "carte": pretty_map(self.info.get("carte", "")),
-            "round": r["round"],
-            "mode": "démo",
-            "kills": len(ks),
-            "hs": sum(hs),
-            "duree_kills": round(span, 2),
-            "type": kill_type(len(ks)),
-            "score": score(len(ks), sum(hs), span),
-            "kills_abs": times,
-            "kills_hs": hs,
-            "partie": 0,
-            "raison": "démo",
-            "session": self.session,
-        }
-        self.e._on_moment(m)
+    def _encode_all(self):
+        from engine import make_thumb
+        import datetime as dt
+        e = self.e
+        enc = (e.method or {}).get("encodeur", "libx264")
+        missing = 0
+        by_round = {}
+        for name, a, b, r, ks in self.seqs:
+            by_round.setdefault(r["round"], []).append((name, a, b, r, ks))
+        day = dt.datetime.now().strftime("%Y-%m-%d")
+        folder = e.cfg.sub(os.path.join("clips", day))
+        for rnd, parts in by_round.items():
+            self._check()
+            files, kills_t, coupes, pos = [], [], [], 0.0
+            for name, a, b, r, ks in parts:
+                imgs, wav = find_movie_files(self.csgo, name)
+                if not imgs:
+                    missing += 1
+                    continue
+                out = os.path.join(folder, f".{name}.mp4")
+                dur = encode_movie(imgs, wav, out, enc)
+                for p in imgs + ([wav] if wav else []):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+                for k in ks:
+                    t = pos + (k["tick"] - a) / self.tr
+                    kills_t.append(round(t, 3))
+                    coupes.append([round(max(pos, t - self.pre), 3), round(min(pos + dur, t + self.post), 3)])
+                files.append(out)
+                pos += dur
+                self.encoded_n += 1
+            if not files:
+                continue
+            r = parts[0][3]
+            ks_all = [k for p in parts for k in p[4]]
+            stem = (dt.datetime.now().strftime("%Hh%M_%S") + f"_{pretty_map(self.info.get('carte', '')) or 'Demo'}"
+                    f"_R{rnd}_{kill_type(len(ks_all))}")
+            final = os.path.join(folder, stem + ".mp4")
+            if len(files) == 1:
+                os.replace(files[0], final)
+            else:
+                lst = final + ".txt"
+                with open(lst, "w", encoding="utf-8") as f:
+                    for p in files:
+                        f.write(f"file '{p.replace(os.sep, '/')}'\n")
+                ff.run([ff.find("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
+                        "-i", lst, "-c", "copy", "-movflags", "+faststart", final], timeout=300, check=True)
+                for p in files + [lst]:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            hs = [bool(k.get("hs")) for k in ks_all]
+            span = kills_t[-1] - kills_t[0] if kills_t else 0
+            row = {
+                "cree": time.time(), "session": self.session, "carte": pretty_map(self.info.get("carte", "")),
+                "round": rnd, "mode": "démo", "kills": len(ks_all), "hs": sum(hs), "duree_kills": round(span, 2),
+                "type": kill_type(len(ks_all)), "score": score(len(ks_all), sum(hs), span), "fichier": final,
+                "coupes": coupes, "kills_t": kills_t, "son": 1, "kills_hs": hs, "partie": 0,
+            }
+            row["miniature"] = make_thumb(final, kills_t[-1] if kills_t else 1.0,
+                                          os.path.join(folder, ".miniatures", stem + ".png"))
+            e.db.add_moment(row)
+        if missing == self.total:
+            raise DemoError("CS2 n'a produit aucune image (module de rendu non chargé ?). Voir journal.txt.")

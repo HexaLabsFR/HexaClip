@@ -27,6 +27,7 @@ type Joueur struct {
 	Kills   int    `json:"kills"`
 	Morts   int    `json:"morts"`
 	HS      int    `json:"hs"`
+	UserID  int    `json:"userid"` // spec_player <userid + 1> dans CS2
 }
 
 type Round struct {
@@ -183,6 +184,7 @@ func main() {
 		if e := equipe(pl.Team); e != "" {
 			j.Equipe = e
 		}
+		j.UserID = pl.UserID
 		return j
 	}
 	p.RegisterNetMessageHandler(func(m *msg.CDemoFileHeader) {

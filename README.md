@@ -93,3 +93,9 @@ python src/hexaclip.py --selftest # vérification (Windows ou Linux, FFmpeg dans
 - Les clutchs ne sont pas détectés en tant que tels : CS2 ne dit pas au joueur combien d'alliés sont en vie (un clutch à 3 kills et plus est quand même gardé).
 - Capture de l'écran principal par défaut : si CS2 tourne sur un autre écran, change-le dans les réglages.
 - Le son capté est celui de la sortie par défaut de Windows (ton casque) : Discord aussi s'entend s'il passe par la même sortie.
+
+## Logiciels tiers
+
+- **CS Demo Manager** (AkiVer, licence MIT) : son module CS2 sert au rendu des démos (fichier `bin/cs2/server.dll`, licence livrée à côté).
+- **demoinfocs-golang** (markus-wa, licence MIT) : lecture des démos dans l'outil `analyse_demo`.
+- **FFmpeg** (licence GPL) : téléchargé au premier lancement.

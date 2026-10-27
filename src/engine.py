@@ -222,7 +222,8 @@ class Engine:
                     self.cs2_running = False
                     self._session_end()
                 # FFmpeg tombé pendant que CS2 tourne : on relance (3 fois max)
-                if self.cs2_running and self.method and self.cfg["capture_auto"] and not self.recorder.running:
+                if self.cs2_running and self.method and self.cfg["capture_auto"] and not self.recorder.running \
+                        and not self.demo_active():
                     if restarts < 3:
                         restarts += 1
                         log("Capture arrêtée, relance. " + self.recorder.error_tail()[-400:])
@@ -250,6 +251,8 @@ class Engine:
         self.session_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         self.session_moments = 0
         self.emit("info", "CS2 détecté.")
+        if self.demo_active():
+            return                       # CS2 ouvert par HexaClip pour calculer une démo : pas de capture d'écran
         if self.cfg["capture_auto"] and self.method:
             self.start_recording()
 
@@ -367,6 +370,10 @@ class Engine:
                 self.emit("erreur", f"Démo : {d.error}")
         threading.Thread(target=run, daemon=True).start()
         return d
+
+    def demo_active(self):
+        d = self.demo
+        return d is not None and d.state not in ("terminé", "erreur", "arrêté")
 
     def db_count(self):
         try:

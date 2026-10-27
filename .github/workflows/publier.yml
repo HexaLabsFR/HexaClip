@@ -56,6 +56,27 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o ../../src/bin/analyse_demo.exe .
           ls -la ../../src/bin
 
+      - name: Récupérer le module de rendu CS2 (CS Demo Manager, licence MIT)
+        run: |
+          git clone --depth 1 https://github.com/akiver/cs-demo-manager ext/csdm
+          cd ext/csdm
+          git submodule update --init cs2-server-plugin/cs2-server-plugin/deps/hl2sdk cs2-server-plugin/cs2-server-plugin/deps/json cs2-server-plugin/cs2-server-plugin/deps/easywsclient
+          git log -1 --format="CS Demo Manager %h (%cs)"
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Fabriquer le module de rendu CS2
+        shell: pwsh
+        run: |
+          Push-Location ext/csdm/cs2-server-plugin
+          msbuild /m /v:minimal /p:Configuration=Release /p:Platform=x64 cs2-server-plugin.sln
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Pop-Location
+          New-Item -ItemType Directory -Force src/bin/cs2 | Out-Null
+          Copy-Item ext/csdm/static/cs2/server.dll src/bin/cs2/server.dll
+          Copy-Item ext/csdm/LICENSE src/bin/cs2/LICENCE-CS-Demo-Manager.txt
+          Get-ChildItem src/bin/cs2
+
       - name: Installer les modules
         run: |
           python -m pip install --upgrade pip
@@ -91,7 +112,7 @@ jobs:
           if ($p.ExitCode -ne 0) { Write-Error "Code de sortie $($p.ExitCode)"; exit 1 }
           $t = Get-Content selftest.txt -Raw -Encoding utf8
           if ($t -match "ERREUR|MANQUANTE") { Write-Error "Vérification en échec"; exit 1 }
-          if ($t -notmatch "compil TikTok automatique : OK" -or $t -notmatch "compil avec les kills choisis : OK" -or $t -notmatch "démo : round clippé comme en direct : OK") { Write-Error "La compil de test n'a pas été montée"; exit 1 }
+          if ($t -notmatch "compil TikTok automatique : OK" -or $t -notmatch "compil avec les kills choisis : OK" -or $t -notmatch "démo : passage calculé encodé et rangé comme un clip : OK" -or $t -notmatch "démo : module de rendu CS2 livré : OK") { Write-Error "La compil de test n'a pas été montée"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:

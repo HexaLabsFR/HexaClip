@@ -153,10 +153,10 @@ class DemoDialog:
         self.tv.bind("<space>", lambda e: self._toggle([int(i) for i in self.tv.selection()]))
         self.tv.bind("<Double-1>", lambda e: "break")
 
-        self.note = app.label(w, "HexaClip ouvre CS2 en mode démo (il le relance s'il est déjà ouvert). Laisse le jeu "
-                                 "au premier plan et ne touche à rien pendant la lecture : HexaClip pilote CS2 avec la "
-                                 "touche Arrêt défil et filme chaque round coché.", 9, "muted", wraplength=700,
-                              justify="left")
+        self.note = app.label(w, "HexaClip ouvre CS2 en mode rendu : le jeu calcule lui-même chaque passage (image et "
+                                 "son du jeu, sans la barre de la démo), puis se ferme tout seul. Pas besoin de le "
+                                 "garder au premier plan : tu peux utiliser ton PC pendant ce temps.", 9, "muted",
+                              wraplength=700, justify="left")
         self.note.pack(side="bottom", anchor="w", pady=(10, 0), before=box, **pad)
         self.prog_box = tk.Frame(w, bg=C["bg"])
         self.prog = ttk.Progressbar(self.prog_box, style="Hexa.Horizontal.TProgressbar", orient="horizontal",
@@ -281,9 +281,9 @@ class DemoDialog:
         ch = self._chosen()
         if not ch:
             return
-        if self.demos.cs2_alive() and not self.demos.cs2_in_demo_mode():
-            if not messagebox.askyesno(APP, "CS2 est ouvert. HexaClip doit le relancer en mode démo pour piloter la "
-                                            "lecture.\n\nFermer CS2 maintenant ?", parent=self.win):
+        if self.demos.cs2_alive():
+            if not messagebox.askyesno(APP, "CS2 est ouvert. HexaClip doit le relancer en mode rendu pour calculer "
+                                            "les clips.\n\nFermer CS2 maintenant ?", parent=self.win):
                 return
             self.est.configure(text="Fermeture de CS2…", fg=C["fg"])
             self.win.update_idletasks()
@@ -308,12 +308,13 @@ class DemoDialog:
             self.prog.configure(value=int(frac * 1000))
             self.prog_lbl.configure(text="")
             if d.state == "terminé":
-                self.est.configure(text=f"Terminé : {d.done_n} passage{'s' if d.done_n > 1 else ''} filmé"
-                                        f"{'s' if d.done_n > 1 else ''}. Les clips sont dans Montage.", fg=C["accent"])
+                n = d.encoded_n
+                self.est.configure(text=f"Terminé : {n} passage{'s' if n > 1 else ''} calculé{'s' if n > 1 else ''}. "
+                                        "Les clips sont dans Montage et Clips.", fg=C["accent"])
                 self.go.configure(text="Recommencer")
             else:
                 self.est.configure(text=d.error or d.state, fg=C["bad"] if d.state == "erreur" else C["warn"])
-                if "ouvert sans le mode démo" in (d.error or ""):
+                if "CS2 est ouvert" in (d.error or ""):
                     self.extra.pack(side="right", padx=8)
             self.app.refresh_montage(keep_period=False) if self.app.current == "Montage" else None
             return
@@ -322,7 +323,7 @@ class DemoDialog:
         self.est.configure(text=f"Démo : {d.state}…", fg=C["accent"])
         reste = "" if left is None else (" · encore ~" + (f"{left // 60} min {left % 60:02d} s" if left >= 60
                                                            else f"{left} s"))
-        self.prog_lbl.configure(text=f"{int(frac * 100)} %{reste} · ne touche pas au PC pendant la lecture")
+        self.prog_lbl.configure(text=f"{int(frac * 100)} %{reste} · CS2 calcule les passages, il se fermera tout seul")
         self.win.after(400, lambda: self._watch(d))
 
     def _stop(self):

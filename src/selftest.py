@@ -168,61 +168,78 @@ def test_demo_logic():
     import ffmpeg_tools as ff
     ok = bool(tool) and ff.run([tool], timeout=30).returncode == 2
     check("démo : outil d'analyse livré", ok, tool or "absent")
+    import paths
+    if paths.FROZEN:                       # dans l'exe : le module de rendu CS2 doit être livré
+        check("démo : module de rendu CS2 livré", bool(demos.plugin_path()), str(demos.plugin_path()))
 
 
 def test_demo(e, tmp):
-    """Lecture d'une démo pilotée par une fausse console CS2 : commandes envoyées et round clippé."""
-    import socket
+    """Rendu d'une démo sans CS2 : fichier de commandes, module ajouté/retiré de CS2, images + son → clip rangé."""
+    import json as _json
     import demos
-    srv = socket.socket()
-    srv.bind(("127.0.0.1", 0))
-    srv.listen(1)
-    got = []
-
-    def serve():
-        c, _ = srv.accept()
-        buf = b""
-        while True:
-            d = c.recv(4096)
-            if not d:
-                break
-            buf += d
-            *lines, buf = buf.split(b"\n")
-            got.extend(x.decode() for x in lines)
-    threading.Thread(target=serve, daemon=True).start()
+    import ffmpeg_tools as ff
     me = "76561198069647509"
     info = {"fichier": os.path.join(tmp, "match.dem"), "carte": "de_mirage", "tickrate": 64,
-            "joueurs": [{"steamid": me, "nom": "ZayKololo"}],
+            "joueurs": [{"steamid": me, "nom": "ZayKololo", "userid": 0}],
             "kills": [{"tick": 2000, "round": 7, "tueur": me, "victime": "1", "arme": "AK-47", "hs": True},
                       {"tick": 2064, "round": 7, "tueur": me, "victime": "2", "arme": "AK-47", "hs": False}]}
     rounds = demos.player_rounds(info, me)
-    n0 = len(e.db.moments(limit=1000))
     d = demos.DemoClipper(e, info, me, rounds, log=lambda *_: None)
-    d.nc.port = srv.getsockname()[1]
-    d.gsi_map = "de_mirage"
-    old_settle = demos.SETTLE_S
-    demos.SETTLE_S = 1.0
-    e.demo = d
+    data = demos.actions_json(d.seqs, 64, d.slot)
+    cmds = [a["cmd"] for a in data[0]["actions"]]
+    ticks = [a["tick"] for a in data[0]["actions"]]
+    check("démo : commandes au tick près (caméra, rendu, sans barre de démo)",
+          d.slot == 1 and "spec_player 1" in cmds and "demo_ui_mode 0" in cmds and cmds[-1] == "quit"
+          and any(c.startswith("startmovie hexaclip_s01") for c in cmds) and "endmovie" in cmds
+          and ticks == sorted(ticks), " | ".join(cmds[-6:]))
+    # module ajouté puis retiré de CS2 (faux dossier du jeu)
+    csgo = os.path.join(tmp, "game", "csgo")
+    os.makedirs(csgo, exist_ok=True)
+    gi = os.path.join(csgo, "gameinfo.gi")
+    orig = 'FileSystem\n{\n\tSearchPaths\n\t{\n\t\t\tGame_LowViolence\tcsgo_lv\n\t\t\tGame\tcsgo\n\t\t\tGame\tcore\n\t}\n}\n'
+    with open(gi, "w", encoding="utf-8") as f:
+        f.write(orig)
+    fake_dll = os.path.join(tmp, "server.dll")
+    with open(fake_dll, "wb") as f:
+        f.write(b"MZ")
+    old_pp = demos.plugin_path
+    demos.plugin_path = lambda: fake_dll
     try:
-        t0 = time.time()
-        d.run()
+        demos.install_plugin(csgo)
+        with open(gi, encoding="utf-8") as f:
+            patched = f.read()
+        demos.restore_gameinfo(csgo)
+        with open(gi, encoding="utf-8") as f:
+            back = f.read()
     finally:
-        demos.SETTLE_S = old_settle
-        e.demo = None
-    deadline = time.time() + 30
-    while len(e.db.moments(limit=1000)) == n0 and time.time() < deadline:
-        time.sleep(0.3)
+        demos.plugin_path = old_pp
+    check("démo : module ajouté à CS2 puis retiré", "Game\tcsgo/hexaclip\n\t\t\tGame\tcsgo" in patched and back == orig
+          and os.path.isfile(os.path.join(csgo, "hexaclip", "bin", "win64", "server.dll")))
+    # images + son comme les écrit « startmovie », puis encodage et rangement
+    movie = os.path.join(csgo, "hexaclip", "movie")
+    os.makedirs(movie, exist_ok=True)
+    name, a, b = d.seqs[0][0], d.seqs[0][1], d.seqs[0][2]
+    secs = (b - a) / 64
+    ff.run([ff.find("ffmpeg"), "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size=640x360:rate=60:d={secs:.3f}",
+            "-q:v", "4", "-start_number", "0", os.path.join(movie, name + "%04d.jpg")], timeout=120)
+    ff.run([ff.find("ffmpeg"), "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:d={secs:.3f}",
+            os.path.join(csgo, "movie_" + name + ".tmp.wav")], timeout=60)
+    os.makedirs(os.path.join(csgo, "movie"), exist_ok=True)
+    os.replace(os.path.join(csgo, "movie_" + name + ".tmp.wav"), os.path.join(csgo, "movie", name + ".wav"))
+    d.csgo = csgo
+    n0 = len(e.db.moments(limit=1000))
+    d._encode_all()
     new = [m for m in e.db.moments(limit=1000) if str(m.get("session", "")).startswith("demo-")]
-    cmds = " | ".join(got)
-    check("démo : CS2 piloté (playdemo, saut, caméra sur le joueur)", d.state == "terminé"
-          and 'playdemo "' in cmds and "demo_gototick" in cmds and "spec_lock_to_accountid 109381781" in cmds
-          and "demo_resume" in cmds, f"{d.state} {d.error} ; {len(got)} commandes en {time.time() - t0:.0f} s")
-    check("démo : barre de chargement à 100 % à la fin", d.progress()[0] == 1.0 and d.play_done > 0, str(d.progress()))
-    ok = len(new) == 1 and os.path.isfile(new[0]["fichier"]) and new[0]["type"] == "2k" and new[0]["round"] == 7
-    check("démo : round clippé comme en direct", ok, new[0]["fichier"] if new else "aucun clip")
+    ok = len(e.db.moments(limit=1000)) == n0 + 1 and len(new) == 1 and os.path.isfile(new[0]["fichier"])
+    info_v = ff.probe(new[0]["fichier"]) if ok else {}
+    kt = new[0]["kills_t"] if new else []
+    check("démo : passage calculé encodé et rangé comme un clip", ok and info_v.get("son") and new[0]["type"] == "2k"
+          and abs(info_v.get("duree", 0) - secs) < 0.2 and len(kt) == 2 and abs(kt[1] - kt[0] - 1.0) < 0.05,
+          f"{info_v.get('duree', 0):.2f} s, kills {kt}, son {info_v.get('son')}, {new[0]['type'] if new else ''}")
+    d.state = "encodage des clips"
+    check("démo : barre de chargement", d.progress()[0] > 0.2, str(d.progress()))
     for m in new:
         e.delete_moment(m["id"])
-    srv.close()
 
 
 def test_faceit():
