@@ -71,6 +71,16 @@ python src/hexaclip.py            # interface (Windows)
 python src/hexaclip.py --selftest # vérification (Windows ou Linux, FFmpeg dans le PATH)
 ```
 
+## Habillage des compils (0.3)
+
+| Élément | Réglage |
+|---|---|
+| Pseudo (intro, plaque en haut des clips, écran de fin) | Réglages > Ton pseudo |
+| Style : Spectre (dégradé + viseur) ou HexaClip (menthe) | Réglages > Style des vidéos |
+| Transition du pack Twitch avant le 1er clip | trouvée toute seule (dossier contenant « Pack » / « Twitch », fichier « Transition… ».webm) ; point de coupe lu dans le LISEZ-MOI ; bouton « Retrouver mon pack » |
+| Bibliothèque de transitions tirées au hasard | Réglages > Bibliothèque de transitions (+ aperçu vidéo) |
+| Texte de fin, intro, compteur de kills | Réglages > Compils TikTok |
+
 ## Choisir ses kills (onglet Montage)
 
 - Une ligne par round, groupée par partie (map), avec l'image du round et une puce par kill (« Kill 2 · HS »).
