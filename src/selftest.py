@@ -124,6 +124,7 @@ def test_pipeline(tmp):
     cfg["dossier_videos"] = os.path.join(tmp, "videos")
     cfg["tampon_s"] = 40
     cfg["compil_fin_faceit"] = False
+    cfg["pseudo"] = "Testeur"
     e = eng.Engine(cfg, db_path=os.path.join(tmp, "test.db"))
     e.method = {"source": "test", "encodeur": "libx264", "fps": 30, "qualite": 23}
     test_in = ["-re", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30",
@@ -166,7 +167,7 @@ def test_pipeline(tmp):
         ok = bool(out and os.path.isfile(out))
         info = ff.probe(out) if ok else {}
         check("compil avec les kills choisis", ok and info.get("w") == 1080 and info.get("h") == 1920
-              and info.get("son") and 9 < info.get("duree", 0) < 13,
+              and info.get("son") and 13.5 < info.get("duree", 0) < 17.5,      # kills + intro 1,7 s + fin 2,8 s
               f"{info.get('w')}x{info.get('h')} {info.get('duree', 0):.1f} s" if ok else "pas de fichier")
     out = e.compile(session=e.session_id)
     ok = bool(out and os.path.isfile(out))

@@ -19,7 +19,7 @@ import webbrowser
 import paths
 from gsi_cs2 import pretty_map
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 APP, BRAND = paths.APP, paths.BRAND
 IS_WIN = sys.platform == "win32"
 
@@ -948,7 +948,11 @@ class App:
         row("Durée sauvée par la touche", combo("duree_manuelle_s", [10, 15, 20, 30], 18,
                                                 ["10 s", "15 s", "20 s", "30 s"]))
 
-        section("Compils TikTok")
+        section("Compils TikTok", "Habillage : intro animée avec ton pseudo, plaque pseudo en haut des clips, "
+                                  "transitions, écran de fin avec ton Elo et « HexaClip by Hexa Labs ».")
+        row("Ton pseudo", entry("pseudo", 22), "affiché dans l'intro, en haut des clips et à la fin")
+        row("Style des vidéos", combo("compil_style", ["spectre", "hexaclip"], 26,
+                                      ["Spectre (dégradé + viseur)", "HexaClip (menthe)"]))
         row("Compil toute seule à la fermeture de CS2", check("compil_auto"),
             "sinon tu choisis tes kills dans Montage")
         row("Durée", combo("compil_duree_s", [30, 45, 60, 90], 18, ["30 s", "45 s", "1 min", "1 min 30"]))
@@ -957,9 +961,13 @@ class App:
         row("Cadrage", combo("compil_cadrage", ["flou", "zoom"], 18, ["Jeu entier + fond flou",
                                                                      "Zoom sur le centre"]))
         row("Compteur de kills à l'écran", check("compil_badges"))
+        row("Intro animée", check("compil_intro"), "logo + pseudo + accroche, 1,7 s")
+        row("Transitions entre les kills", check("compil_transitions"))
+        row("Texte de fin", entry("compil_appel", 30), "ex. Abonne-toi pour la suite (vide = rien)")
         row("Texte en haut (facultatif)", entry("compil_texte", 30), "ex. le nom de ta chaîne")
         row("Logo perso (PNG transparent)", folder("compil_logo", "Logo PNG", file=True))
-        self.label(f, "Vide = logo HexaClip.", 9, "muted").pack(anchor="w")
+        self.label(f, "Vide = ton pseudo (ou le logo HexaClip si tu n'as pas mis de pseudo).", 9, "muted").pack(
+            anchor="w")
         row("Écran de fin avec l'Elo Faceit", check("compil_fin_faceit"))
         row("Ajouter une musique", check("musique_on"), "fichiers libres de droits uniquement")
         row("Dossier des musiques", folder("musique_dossier", "Dossier de musiques"))
@@ -1231,7 +1239,7 @@ def main():
             if args.selftest:
                 import importlib
                 for mod in ("psutil", "pystray", "PIL", "config", "db", "engine", "faceit", "ffmpeg_tools",
-                            "gsi_cs2", "moments", "montage", "recorder", "selftest", "updater") + \
+                            "gsi_cs2", "moments", "montage", "recorder", "selftest", "updater", "brand", "intro", "spectre") + \
                         (("pyaudiowpatch",) if IS_WIN else ()):
                     try:
                         m = importlib.import_module(mod)
@@ -1240,7 +1248,8 @@ def main():
                         print(f"module {mod} : ERREUR {e}")
                         ok = False
                 for f in ("assets/hexaclip.ico", "assets/app_64.png", "assets/symbole_36.png",
-                          "assets/filigrane.png", "assets/SpaceGrotesk-Bold.ttf"):
+                          "assets/filigrane.png", "assets/SpaceGrotesk-Bold.ttf", "assets/coupe_haut.png",
+                          "assets/coupe_bas.png", "assets/Audiowide-Regular.ttf", "assets/Rajdhani-Bold.ttf"):
                     exists = os.path.exists(paths.res(*f.split("/")))
                     print(f"ressource {f} : {'OK' if exists else 'MANQUANTE'}")
                     ok = ok and exists

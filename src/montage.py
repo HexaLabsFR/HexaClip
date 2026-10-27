@@ -5,8 +5,9 @@ verticale 1080×1920 d'environ une minute.
 
 Cadrage « flou » : le jeu entier au centre (côtés légèrement rognés) sur un fond flouté du même jeu.
 Cadrage « zoom » : le centre de l'écran (viseur) en plein écran vertical.
-Par-dessus : logo en haut, compteur de kills qui monte (1 KILL, 2 KILLS, 3K…), map et round,
-puis un écran de fin avec l'Elo Faceit de la session.
+Habillage (brand.py) : intro animée avec ton pseudo, plaque pseudo en haut, compteur de kills qui monte
+(1 KILL, 2 KILLS, 3K…) avec un coup de zoom sur chaque kill, map et round, transitions en balayage
+diagonal avec whoosh, puis écran de fin animé (pseudo, Elo de la session, appel à s'abonner).
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from moments import LABELS
 
 W, H, FPS = 1080, 1920, 60
 OUTRO_S = 2.6
+INTRO_S = 1.7
 MINT = "0x2EE6A8"
 INK = "0x0B0F14"
 AUDIO_EXT = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")
@@ -83,7 +85,12 @@ def kill_labels(n_total, kill_type):
 # ----------------------------------------------------------------------------
 # Construction de la commande FFmpeg
 # ----------------------------------------------------------------------------
+_BADGE_FONT = None      # police des badges (fichier dans assets), fixée par le style
+
+
 def _font():
+    if _BADGE_FONT and os.path.isfile(paths.res("assets", _BADGE_FONT)):
+        return ff.filter_path(paths.res("assets", _BADGE_FONT))
     return ff.filter_path(paths.font_file("Bold") or "")
 
 
@@ -99,13 +106,28 @@ def _text(label, size, y, color="white", box=None, enable=None, alpha=None, x="(
     return s
 
 
+def _pulse_expr(kills_rel, amp=0.055, dur=0.2):
+    """Expression FFmpeg du « coup de zoom » sur chaque kill (0 hors des kills)."""
+    terms = [f"if(between(t,{k:.3f},{k + dur:.3f}),sin(PI*(t-{k:.3f})/{dur}),0)" for k in kills_rel]
+    return f"{amp}*(" + "+".join(terms) + ")" if terms else "0"
+
+
 def build(chosen, out_path, opts):
-    """Renvoie (commande, durée). opts : cadrage, badges, texte, logo, fin (dict|None), musique (chemin|None),
-    musique_volume, encodeur."""
+    """Renvoie (commande, durée). opts : cadrage, badges, texte, logo / plaque (PNG du filigrane), fin (dict),
+    intro_file, outro_file (écran de fin animé), stinger_file + whoosh_dir (transitions), punch (zoom sur les kills),
+    musique, musique_volume, encodeur."""
+    global _BADGE_FONT
+    th = opts.get("theme")
+    _BADGE_FONT = getattr(th, "BADGE_FONT", None)
+    final_box = getattr(th, "BADGE_FINAL_BOX", f"{MINT}@0.96")
+    final_txt = getattr(th, "BADGE_FINAL_TEXT", INK)
+    intro_s = getattr(th, "INTRO_S", INTRO_S)
     args = [ff.find("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"]
     chains, labels_v, labels_a = [], [], []
     idx = 0
-    total = 0.0
+    clips_total = 0.0
+    trans = bool(opts.get("stinger_file"))
+    cut_marks = []                        # fins de passages (temps dans la suite des clips)
     for m in chosen:
         n_kills = len(m.get("kills_t") or [])
         names = kill_labels(n_kills, m.get("type"))
@@ -124,15 +146,18 @@ def build(chosen, out_path, opts):
             args += ["-ss", f"{a:.3f}", "-t", f"{d:.3f}", "-i", m["fichier"]]
             i = idx
             idx += 1
+            rel = [k - a for k in kills if a - 0.05 <= k <= b + 0.05]
+            zoom = _pulse_expr(rel) if opts.get("punch", True) else "0"
             v = f"[{i}:v]setpts=PTS-STARTPTS,fps={FPS},scale=1920:1080:force_original_aspect_ratio=decrease," \
                 f"pad=1920:1080:-1:-1,setsar=1"
             if opts.get("cadrage") == "zoom":
-                v += f",crop=ih*9/16:ih,scale={W}:{H}"
+                v += (f",crop=ih*9/16:ih,scale=w='{W}*(1+{zoom})':h=-2:eval=frame,crop={W}:{H}")
                 y_badge, y_sub = int(H * 0.70), int(H * 0.70) + 175
             else:
                 v += (f",split=2[bg{i}][fg{i}];[bg{i}]scale={W}:{H}:force_original_aspect_ratio=increase,"
                       f"crop={W}:{H},gblur=sigma=28,eq=brightness=-0.14:saturation=1.15[bb{i}];"
-                      f"[fg{i}]crop=ih*1.4:ih,scale={W}:-2[ff{i}];[bb{i}][ff{i}]overlay=(W-w)/2:(H-h)/2-90")
+                      f"[fg{i}]crop=ih*1.4:ih,scale={W}:-2,scale=w='{W}*(1+{zoom})':h=-2:eval=frame,"
+                      f"crop={W}:{int(W / 1.4) // 2 * 2}[ff{i}];[bb{i}][ff{i}]overlay=(W-w)/2:(H-h)/2-90")
                 y_badge, y_sub = 1330, 1505
             # compteur de kills : chaque palier s'affiche du kill jusqu'au suivant (ou la fin du passage)
             if opts.get("badges", True):
@@ -144,44 +169,64 @@ def build(chosen, out_path, opts):
                     t1 = min(d + 1, nxt)
                     final = k_i == len(kills) - 1
                     v += "," + _text(names[k_i], 150 if final else 104, y_badge,
-                                     color=INK if final else "white",
-                                     box=f"{MINT}@0.96" if final else "black@0.55",
+                                     color=final_txt if final else "white",
+                                     box=final_box if final else "black@0.55",
                                      enable=f"between(t,{t0:.3f},{t1:.3f})",
                                      alpha=f"min(1,(t-{t0:.3f})*7)")
-                if m.get("type") == "manuel" and not kills:
-                    pass
             if subtitle:
                 v += "," + _text(subtitle, 44, y_sub, color="white@0.85")
             if opts.get("texte"):
                 v += "," + _text(opts["texte"], 58, 330, color="white")
-            v += f",fade=t=in:st=0:d=0.12,format=yuv420p,setsar=1[v{i}]"
+            if not trans:
+                v += ",fade=t=in:st=0:d=0.12"
+            v += f",format=yuv420p,setsar=1[v{i}]"
             chains.append(v)
             if m.get("son", 1):
                 chains.append(f"[{i}:a]asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,"
-                              f"apad,atrim=0:{d:.3f},afade=t=in:d=0.06,afade=t=out:st={max(0, d - 0.12):.3f}:d=0.12"
+                              f"apad,atrim=0:{d:.3f},afade=t=in:d=0.06,afade=t=out:st={max(0, d - 0.08):.3f}:d=0.08"
                               f"[a{i}]")
             else:
                 chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{d:.3f}[a{i}]")
             labels_v.append(f"[v{i}]")
             labels_a.append(f"[a{i}]")
-            total += d
+            clips_total += d
+            cut_marks.append(clips_total)
     if not labels_v:
         raise ValueError("aucun passage à monter")
     n = len(labels_v)
     chains.append("".join(f"{v}{a}" for v, a in zip(labels_v, labels_a)) + f"concat=n={n}:v=1:a=1[cv][ca]")
 
-    # logo en filigrane sur tout le montage
-    logo = opts.get("logo") or paths.res("assets", "filigrane.png")
+    # filigrane : plaque pseudo (ou logo HexaClip) sur tous les clips
+    logo = opts.get("plaque") or opts.get("logo") or paths.res("assets", "filigrane.png")
     args += ["-loop", "1", "-framerate", str(FPS), "-i", logo]
     li = idx
     idx += 1
-    chains.append(f"[{li}:v]scale=430:-1,format=rgba,colorchannelmixer=aa=0.93[wm]")
+    width = "" if opts.get("plaque") else "scale=430:-1,"
+    chains.append(f"[{li}:v]{width}format=rgba,colorchannelmixer=aa=0.95[wm]")
     chains.append("[cv][wm]overlay=(W-w)/2:150:shortest=1:format=auto[cvw]")
-    last_v, last_a = "[cvw]", "[ca]"
+    seq = []                              # (étiquette vidéo, étiquette son, durée) dans l'ordre
+    total = 0.0
+    cuts = []
 
-    # écran de fin
+    if opts.get("intro_file"):
+        args += ["-i", opts["intro_file"]]
+        ii = idx
+        idx += 1
+        chains.append(f"[{ii}:v]fps={FPS},scale={W}:{H},setsar=1,format=yuv420p[iv]")
+        chains.append(f"[{ii}:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{intro_s:.3f}[ia]")
+        seq.append(("[iv]", "[ia]", intro_s))
+    seq.append(("[cvw]", "[ca]", clips_total))
+
     fin = opts.get("fin")
-    if fin is not None:
+    if opts.get("outro_file"):
+        args += ["-i", opts["outro_file"]]
+        oi = idx
+        idx += 1
+        od = float(opts.get("outro_s", OUTRO_S))
+        chains.append(f"[{oi}:v]fps={FPS},scale={W}:{H},setsar=1,format=yuv420p[ov]")
+        chains.append(f"[{oi}:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{od:.3f}[oa]")
+        seq.append(("[ov]", "[oa]", od))
+    elif fin is not None:                 # ancien écran de fin (texte fixe)
         sym = paths.res("assets", "filigrane.png")
         args += ["-loop", "1", "-framerate", str(FPS), "-t", f"{OUTRO_S}", "-i", sym]
         si = idx
@@ -195,9 +240,41 @@ def build(chosen, out_path, opts):
         o += ",fade=t=in:st=0:d=0.25,format=yuv420p,setsar=1[ov]"
         chains.append(o)
         chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{OUTRO_S}[oa]")
-        chains.append(f"{last_v}{last_a}[ov][oa]concat=n=2:v=1:a=1[fv][fa]")
-        last_v, last_a = "[fv]", "[fa]"
-        total += OUTRO_S
+        seq.append(("[ov]", "[oa]", OUTRO_S))
+
+    # instants des coupes dans la vidéo finale
+    for k, (_, _, d) in enumerate(seq):
+        if seq[k][0] == "[cvw]":
+            cuts += [total + c for c in cut_marks[:-1]]
+        total += d
+        if k < len(seq) - 1:
+            cuts.append(total)
+    if len(seq) > 1:
+        chains.append("".join(v + a for v, a, _ in seq) + f"concat=n={len(seq)}:v=1:a=1[sv][sa]")
+        last_v, last_a = "[sv]", "[sa]"
+    else:
+        last_v, last_a = "[cvw]", "[ca]"
+
+    # transitions : balayage superposé à chaque coupe + whoosh
+    if trans and cuts:
+        from brand import whoosh_track
+        STINGER_CUT = getattr(th, "STINGER_CUT", 0.23)
+        args += ["-i", opts["stinger_file"]]
+        sti = idx
+        idx += 1
+        chains.append(f"[{sti}:v]split={len(cuts)}" + "".join(f"[st{k}]" for k in range(len(cuts))))
+        for k, c in enumerate(cuts):
+            chains.append(f"[st{k}]setpts=PTS-STARTPTS+{max(0.0, c - STINGER_CUT):.3f}/TB[sd{k}]")
+            chains.append(f"{last_v}[sd{k}]overlay=eof_action=pass:format=auto[tv{k}]")
+            last_v = f"[tv{k}]"
+        wpath = os.path.join(opts.get("whoosh_dir") or os.path.dirname(out_path), ".whoosh_tmp.wav")
+        whoosh_track(wpath, total, cuts)
+        args += ["-i", wpath]
+        wi = idx
+        idx += 1
+        chains.append(f"[{wi}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{total:.3f}[wh]")
+        chains.append(f"{last_a}[wh]amix=inputs=2:duration=first:normalize=0[am]")
+        last_a = "[am]"
 
     # musique (optionnelle) mélangée sous le son du jeu
     if opts.get("musique"):
@@ -236,11 +313,70 @@ def pick_music(folder):
     return random.choice(files) if files else None
 
 
+def theme_module(style):
+    """Module d'habillage : « spectre » (identité du pseudo) ou « hexaclip » (menthe)."""
+    if style == "spectre":
+        import spectre
+        return spectre
+    import brand
+    return brand
+
+
 def make(chosen, out_dir, opts, log=print):
-    """Monte la compil. Renvoie (chemin, durée). Repli sur libx264 si l'encodeur matériel refuse."""
+    """Monte la compil. Renvoie (chemin, durée). Repli sur libx264 si l'encodeur matériel refuse.
+    opts : style (spectre | hexaclip), intro = (titre, sous_titre), pseudo, appel (texte de fin),
+    transitions (bool), en plus de build()."""
     os.makedirs(out_dir, exist_ok=True)
     name = "HexaClip_" + dt.datetime.now().strftime("%Y-%m-%d_%Hh%M") + ".mp4"
     out = os.path.join(out_dir, name)
+    work = os.path.join(out_dir, ".travail")
+    os.makedirs(work, exist_ok=True)
+    tmp = []
+    opts = dict(opts)
+    th = theme_module(opts.get("style", "hexaclip"))
+    opts["theme"] = th
+    pseudo = (opts.get("pseudo") or "").strip()
+    trans = bool(opts.get("transitions", True))
+    try:
+        if trans:
+            try:
+                opts["stinger_file"] = th.render_stinger(paths.data(f"transition_{th.__name__}_v1.mov"))
+                opts["whoosh_dir"] = work
+                tmp.append(os.path.join(work, ".whoosh_tmp.wav"))
+            except Exception as e:
+                log(f"Transitions ignorées : {e}")
+        if pseudo and not opts.get("logo"):
+            opts["plaque"] = th.nameplate(pseudo, os.path.join(work, "plaque.png"))
+            tmp.append(opts["plaque"])
+        if opts.get("intro"):
+            p = os.path.join(work, "intro.mp4")
+            try:
+                if hasattr(th, "render_intro"):
+                    opts["intro_file"] = th.render_intro(p, *opts["intro"], pseudo=pseudo, fondu=not trans)
+                else:
+                    import intro
+                    opts["intro_file"] = intro.render(p, *opts["intro"], pseudo=pseudo, fondu=not trans)
+                tmp.append(p)
+            except Exception as e:
+                log(f"Intro ignorée : {e}")
+        if opts.get("fin") is not None or pseudo or opts.get("appel"):
+            p = os.path.join(work, "fin.mp4")
+            try:
+                opts["outro_file"] = th.render_outro(p, pseudo, opts.get("fin"), opts.get("appel", ""))
+                opts["outro_s"] = th.OUTRO_S
+                tmp.append(p)
+            except Exception as e:
+                log(f"Écran de fin animé ignoré : {e}")
+        return _make(chosen, out, opts, log)
+    finally:
+        for p in tmp:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def _make(chosen, out, opts, log):
     enc = opts.get("encodeur", "libx264")
     tries = [enc] + (["libx264"] if enc != "libx264" else [])
     last = None

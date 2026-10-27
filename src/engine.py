@@ -337,7 +337,14 @@ class Engine:
         return {**auto, **fixed}
 
     def compile_budget(self, fin=True):
-        return float(self.cfg["compil_duree_s"]) - (montage.OUTRO_S if fin else 0)
+        """Durée laissée aux kills : durée de la compil moins l'intro et l'écran de fin."""
+        th = montage.theme_module(self.cfg["compil_style"])
+        b = float(self.cfg["compil_duree_s"])
+        if self.cfg["compil_intro"]:
+            b -= getattr(th, "INTRO_S", montage.INTRO_S)
+        if fin or self.cfg["pseudo"].strip() or self.cfg["compil_appel"].strip():
+            b -= th.OUTRO_S
+        return max(10.0, b)
 
     def compile(self, session=None, since=None, ids=None, selection=None):
         """Monte une compil. selection = {id_action: [indices des kills]} (onglet Montage) ; sinon les kills
@@ -377,10 +384,16 @@ class Engine:
                 "texte": self.cfg["compil_texte"].strip(),
                 "logo": self.cfg["compil_logo"] if os.path.isfile(self.cfg["compil_logo"] or "") else None,
                 "fin": fin, "encodeur": enc,
+                "pseudo": self.cfg["pseudo"].strip(), "transitions": bool(self.cfg["compil_transitions"]),
+                "style": self.cfg["compil_style"],
+                "appel": self.cfg["compil_appel"].strip(),
                 "musique": montage.pick_music(self.cfg["musique_dossier"]) if self.cfg["musique_on"] else None,
                 "musique_volume": float(self.cfg["musique_volume"]),
             }
             n_kills = sum(len(it.get("kills_t") or []) for it in items)
+            if self.cfg["compil_intro"]:
+                import intro
+                opts["intro"] = intro.hook(items)
             self.busy = f"Montage de la compil ({n_kills} kills)…"
             out, dur = montage.make(items, self.cfg.sub("compils"), opts, log=log)
             self.db.add_compil(out, dur, [m["id"] for m in items], session)

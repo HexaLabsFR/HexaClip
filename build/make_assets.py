@@ -39,6 +39,16 @@ def coupe_svg(color=MINT, hole=BG, play=True, gap=(5, -9), stroke=10, app_bg=Non
 </svg>'''
 
 
+def coupe_half_svg(part, color=MINT, hole=BG):
+    """Une moitié du logo Coupe (haut ou bas), sans décalage : l'intro les fait se rejoindre."""
+    clip = ("0,0 200,0 200,48 0,148" if part == "haut" else "0,148 200,48 200,200 0,200")
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+<defs><clipPath id="c"><polygon points="{clip}"/></clipPath></defs>
+<g clip-path="url(#c)"><polygon points="{HEX}" fill="{color}" stroke="{color}" stroke-width="10" stroke-linejoin="round"/>
+<polygon points="82,70 82,130 134,100" fill="{hole}"/></g>
+</svg>'''
+
+
 def render(svg, size):
     png = cairosvg.svg2png(bytestring=svg.encode("utf-8"), output_width=size, output_height=size)
     return Image.open(io.BytesIO(png)).convert("RGBA")
@@ -96,6 +106,8 @@ def main():
     for s in (36, 72, 512):
         render(coupe_svg(hole=BG), s).save(os.path.join(OUT, f"symbole_{s}.png"))
     wordmark(120).save(os.path.join(OUT, "filigrane.png"))
+    for part in ("haut", "bas"):                      # moitiés du logo pour l'intro animée
+        render(coupe_half_svg(part), 520).save(os.path.join(OUT, f"coupe_{part}.png"))
     print("Logos écrits dans", OUT)
 
 
