@@ -1,4 +1,8 @@
-HexaClip 0.3.1 — correctif du son et de la capture
+HexaClip 0.3.1 — aperçu des clips, sélection multiple, correctif du son
+
+- Onglet Clips : le clip sélectionné se lance en boucle directement dans la fenêtre (sans le son), avec une frise qui marque chaque kill. « ▶ Avec le son » ouvre le lecteur complet.
+- Onglet Clips : cases à cocher (clic sur ☐, barre Espace, Tout cocher / Tout décocher) pour supprimer, mettre en favori, écarter ou faire une compil de plusieurs clips d'un coup. Taille de chaque clip et place libérée affichées.
+- Onglet Clips : filtres (favoris, 3K et plus, aujourd'hui, écartés) et tri par date, action, map ou taille (clic sur l'en-tête).
 
 - Son du jeu : HexaClip suit maintenant ta sortie son Windows. Si tu allumes ou branches ton casque après le lancement, ou si tu changes de sortie, il bascule dessus tout seul (avant : vidéo silencieuse).
 - Casques 5.1 / 7.1 « surround » : le son est remixé correctement en stéréo (voix et bruits du centre compris).

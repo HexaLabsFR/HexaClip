@@ -238,6 +238,8 @@ class App:
             b.configure(fg=C["accent"] if t == name else C["muted"])
         if self.current:
             self.pages[self.current].pack_forget()
+        if name != "Clips" and getattr(self, "clip_player", None):
+            self.clip_player.stop()
         self.pages[name].pack(fill="both", expand=True)
         self.current = name
         {"Clips": self.refresh_clips, "Compils": self.refresh_compils, "Faceit": self.refresh_faceit_tab,
@@ -611,73 +613,266 @@ class App:
         sb.pack(side="right", fill="y")
         return box, tv
 
+    CLIP_FILTERS = ["Tous les clips", "★ Favoris", "3K et plus", "Aujourd'hui", "Écartés des compils"]
+
     def _page_clips(self):
-        tk = self.tk
+        tk, ttk = self.tk, self.ttk
         f = tk.Frame(self.body, bg=C["bg"])
         head = tk.Frame(f, bg=C["bg"])
         head.pack(fill="x", pady=(0, 10))
         self.label(head, "Tes actions gardées", 14, "fg", True).pack(side="left")
         self.clips_count = self.label(head, "", 10, "muted")
         self.clips_count.pack(side="left", padx=12)
-        cols = [("quand", "Quand", 150, "w"), ("type", "Action", 80, "center"), ("carte", "Map", 110, "w"),
-                ("round", "Round", 60, "center"), ("hs", "HS", 50, "center"), ("score", "Note", 60, "center"),
-                ("fav", "★", 40, "center"), ("etat", "Compil", 90, "center")]
-        box, self.clips_tv = self._tree(f, cols)
-        box.pack(fill="both", expand=True)
-        self.clips_tv.bind("<Double-1>", lambda e: self._clip_action("lire"))
+        self.clips_filter = tk.StringVar(value=self.CLIP_FILTERS[0])
+        cb = ttk.Combobox(head, textvariable=self.clips_filter, values=self.CLIP_FILTERS, state="readonly", width=20)
+        cb.pack(side="right")
+        cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_clips())
+        self.button(head, "Tout décocher", lambda: self._clips_check_all(False)).pack(side="right", padx=8)
+        self.button(head, "Tout cocher", lambda: self._clips_check_all(True)).pack(side="right")
+
+        main = tk.Frame(f, bg=C["bg"])
+        main.pack(fill="both", expand=True)
+        # aperçu à droite
+        side = self.card(main)
+        side.pack(side="right", fill="y", padx=(12, 0))
+        from apercu import MiniPlayer
+        self.clip_player = MiniPlayer(tk, side, C, FONT)
+        self.clip_player.view.pack(padx=12, pady=(12, 0))
+        self.clip_player.view.bind("<Button-1>", lambda e: self._clip_action("lire"))
+        self.clip_player.bar.pack(padx=12, pady=(6, 0))
+        self.clip_title = self.label(side, "Sélectionne un clip", 13, "fg", True, bg="panel")
+        self.clip_title.pack(anchor="w", padx=14, pady=(12, 0))
+        self.clip_sub = self.label(side, "Il se lance ici en boucle, sans le son.", 9, "muted", bg="panel",
+                                   wraplength=390, justify="left")
+        self.clip_sub.pack(anchor="w", padx=14, pady=(2, 10))
+        row = tk.Frame(side, bg=C["panel"])
+        row.pack(anchor="w", padx=12, pady=(0, 12))
+        self.button(row, "▶ Avec le son", lambda: self._clip_action("lire"), primary=True, bg="panel").pack(
+            side="left")
+        self.button(row, "Dossier", lambda: self._clip_action("dossier"), bg="panel").pack(side="left", padx=6)
+        self.button(row, "★", lambda: self._clip_action("fav_un"), bg="panel").pack(side="left")
+        self.label(side, "Frise : chaque trait vert = un kill.", 8, "muted", bg="panel").pack(anchor="w", padx=14)
+
+        cols = [("sel", "☐", 36, "center"), ("quand", "Quand", 130, "w"), ("type", "Action", 76, "center"),
+                ("carte", "Map", 110, "w"), ("round", "Round", 54, "center"), ("hs", "HS", 40, "center"),
+                ("taille", "Taille", 70, "e"), ("fav", "★", 32, "center"), ("etat", "Compil", 86, "center")]
+        box, self.clips_tv = self._tree(main, cols)
+        box.pack(side="left", fill="both", expand=True)
+        tv = self.clips_tv
+        tv.column("sel", stretch=False)
+        tv.column("quand", stretch=True)
+        tv.tag_configure("coche", foreground=C["accent"])
+        tv.tag_configure("absent", foreground=C["muted"])
+        for key in ("quand", "type", "carte", "taille"):
+            tv.heading(key, command=lambda k=key: self._clips_sort(k))
+        tv.heading("sel", command=lambda: self._clips_check_all(len(self.clips_checked) < len(self._clips_view)))
+        tv.bind("<Button-1>", self._clips_click, add="+")
+        tv.bind("<space>", lambda e: self._clips_toggle([int(i) for i in tv.selection()]))
+        tv.bind("<<TreeviewSelect>>", lambda e: self._clips_preview())
+        tv.bind("<Double-1>", lambda e: self._clip_action("lire"))
+        tv.bind("<Delete>", lambda e: self._clip_action("suppr"))
+
         btns = tk.Frame(f, bg=C["bg"])
         btns.pack(fill="x", pady=(12, 0))
-        for text, act in [("Lire", "lire"), ("Dans le dossier", "dossier"), ("★ Favori", "fav"),
-                          ("Garder / écarter des compils", "exclu"), ("Supprimer", "suppr")]:
+        self.clips_sel_lbl = self.label(btns, "", 10, "soft", True)
+        self.clips_sel_lbl.pack(side="left", padx=(0, 12))
+        for text, act in [("★ Favori", "fav"), ("Garder / écarter des compils", "exclu"), ("Supprimer", "suppr")]:
             self.button(btns, text, lambda a=act: self._clip_action(a)).pack(side="left", padx=(0, 8))
         self.button(btns, "Compil avec la sélection", lambda: self._clip_action("compil"), primary=True).pack(
             side="right")
-        self.label(f, "Les favoris (★) passent en priorité dans les compils et ne sont jamais supprimés par le ménage "
-                      "automatique.", 9, "muted").pack(anchor="w", pady=(10, 0))
+        self.label(f, "Coche les clips (case ☐ ou barre Espace, Ctrl / Maj pour en prendre plusieurs) pour les "
+                      "supprimer, les mettre en favori ou en faire une compil. Les favoris (★) passent en priorité "
+                      "et ne sont jamais supprimés par le ménage automatique.", 9, "muted", wraplength=1000,
+                   justify="left").pack(anchor="w", pady=(10, 0))
+        self.clips_checked, self._clips, self._clips_view, self._clips_sort_key = set(), {}, [], ("quand", True)
         return f
 
+    @staticmethod
+    def _size(m):
+        try:
+            return os.path.getsize(m["fichier"]) if m.get("fichier") else 0
+        except OSError:
+            return 0
+
+    @staticmethod
+    def _fmt_size(n):
+        return f"{n / 1e9:.1f} Go" if n >= 1e9 else f"{n / 1e6:.0f} Mo"
+
     def refresh_clips(self):
-        tv = self.clips_tv
-        tv.delete(*tv.get_children())
-        self._clips = {m["id"]: m for m in self.engine.db.moments(limit=1000)}
         from moments import LABELS
+        tv = self.clips_tv
+        keep = tv.selection()
+        tv.delete(*tv.get_children())
+        self._clips = {m["id"]: m for m in self.engine.db.moments(limit=2000)}
         for m in self._clips.values():
-            exists = m.get("fichier") and os.path.isfile(m["fichier"])
+            m["_taille"] = self._size(m)
+        flt = self.clips_filter.get()
+        today = dt.date.today()
+        view = [m for m in self._clips.values() if
+                flt == "Tous les clips"
+                or (flt == "★ Favoris" and m.get("favori"))
+                or (flt == "3K et plus" and m["type"] in ("3k", "4k", "ace"))
+                or (flt == "Aujourd'hui" and dt.date.fromtimestamp(m["cree"]) == today)
+                or (flt == "Écartés des compils" and m.get("exclu"))]
+        key, desc = self._clips_sort_key
+        order = {"quand": lambda m: m["cree"], "type": lambda m: (m.get("kills") or 0, m["cree"]),
+                 "carte": lambda m: ((m.get("carte") or "").lower(), m["cree"]), "taille": lambda m: m["_taille"]}
+        view.sort(key=order[key], reverse=desc)
+        self._clips_view = view
+        self.clips_checked &= set(self._clips)
+        for m in view:
+            exists = m["_taille"] > 0
             etat = "écarté" if m.get("exclu") else ("" if exists else "fichier absent")
-            tv.insert("", "end", iid=str(m["id"]), values=(
-                fmt_date(m["cree"]), LABELS.get(m["type"], m["type"]), m.get("carte") or "—",
-                m.get("round") or "—", m.get("hs") if m.get("kills") else "—", f"{m.get('score', 0):.0f}",
-                "★" if m.get("favori") else "", etat))
-        self.clips_count.configure(text=f"{len(self._clips)} clips")
+            on = m["id"] in self.clips_checked
+            tv.insert("", "end", iid=str(m["id"]), tags=("coche",) if on else (("absent",) if not exists else ()),
+                      values=("☑" if on else "☐", fmt_date(m["cree"]), LABELS.get(m["type"], m["type"]),
+                              m.get("carte") or "—", m.get("round") or "—", m.get("hs") if m.get("kills") else "—",
+                              self._fmt_size(m["_taille"]) if exists else "—", "★" if m.get("favori") else "", etat))
+        total = sum(m["_taille"] for m in self._clips.values())
+        self.clips_count.configure(text=f"{len(view)} clips affichés · {self._fmt_size(total)} au total")
+        keep = [i for i in keep if tv.exists(i)]
+        if keep:
+            tv.selection_set(keep)
+        self._clips_update_sel()
+
+    def _clips_update_sel(self):
+        ch = [self._clips[i] for i in self.clips_checked if i in self._clips]
+        if ch:
+            self.clips_sel_lbl.configure(text=f"{len(ch)} coché{'s' if len(ch) > 1 else ''} · "
+                                              f"{self._fmt_size(sum(m.get('_taille', 0) for m in ch))}", fg=C["accent"])
+        else:
+            self.clips_sel_lbl.configure(text="Aucun clip coché", fg=C["muted"])
+        self.clips_tv.heading("sel", text="☑" if ch and len(ch) >= len(self._clips_view) else "☐")
+
+    def _clips_paint(self, ids):
+        tv = self.clips_tv
+        for i in ids:
+            if not tv.exists(str(i)):
+                continue
+            on = i in self.clips_checked
+            tv.set(str(i), "sel", "☑" if on else "☐")
+            tv.item(str(i), tags=("coche",) if on else ())
+        self._clips_update_sel()
+
+    def _clips_toggle(self, ids):
+        ids = [i for i in ids if i in self._clips]
+        if not ids:
+            return
+        on = not all(i in self.clips_checked for i in ids)
+        for i in ids:
+            (self.clips_checked.add if on else self.clips_checked.discard)(i)
+        self._clips_paint(ids)
+
+    def _clips_click(self, e):
+        tv = self.clips_tv
+        if tv.identify_region(e.x, e.y) == "cell" and tv.identify_column(e.x) == "#1":
+            row = tv.identify_row(e.y)
+            if row:
+                sel = [int(i) for i in tv.selection()]
+                # case cochée sur une ligne déjà dans une sélection multiple : on coche toute la sélection
+                self._clips_toggle(sel if int(row) in sel and len(sel) > 1 else [int(row)])
+                return "break"
+
+    def _clips_check_all(self, on):
+        ids = [m["id"] for m in self._clips_view]
+        if on:
+            self.clips_checked |= set(ids)
+        else:
+            self.clips_checked -= set(ids)
+        self._clips_paint(ids)
+
+    def _clips_sort(self, key):
+        cur, desc = self._clips_sort_key
+        self._clips_sort_key = (key, not desc if cur == key else key in ("quand", "taille", "type"))
+        self.refresh_clips()
+
+    def _clips_preview(self):
+        from moments import LABELS
+        sel = self.clips_tv.selection()
+        m = self._clips.get(int(sel[0])) if sel else None
+        if not m:
+            return
+        exists = m.get("_taille", 0) > 0
+        title = LABELS.get(m["type"], m["type"]) + " · " + (m.get("carte") or "CS2")
+        if m.get("round"):
+            title += f" · round {m['round']}"
+        self.clip_title.configure(text=title)
+        hs = m.get("hs") or 0
+        parts = [fmt_date(m["cree"])]
+        if m.get("kills"):
+            parts.append(f"{m['kills']} kill{'s' if m['kills'] > 1 else ''}" + (f" dont {hs} HS" if hs else ""))
+        parts.append(self._fmt_size(m["_taille"]) if exists else "fichier absent")
+        if m.get("favori"):
+            parts.append("★ favori")
+        self.clip_sub.configure(text=" · ".join(parts))
+        if exists:
+            mini = m.get("miniature") if m.get("miniature") and os.path.isfile(m["miniature"]) else None
+            self.clip_player.show(m["fichier"], m.get("kills_t") or [], mini)
+        else:
+            self.clip_player.blank("Fichier introuvable")
 
     def _selected_clips(self):
-        return [self._clips[int(i)] for i in self.clips_tv.selection() if int(i) in self._clips]
+        """Clips cochés ; sinon la ou les lignes surlignées."""
+        ids = [i for i in self.clips_checked if i in self._clips] or \
+              [int(i) for i in self.clips_tv.selection() if int(i) in self._clips]
+        return [self._clips[i] for i in ids]
 
     def _clip_action(self, act):
         from tkinter import messagebox
-        sel = self._selected_clips()
+        if act in ("lire", "dossier", "fav_un"):
+            cur = self.clips_tv.selection()
+            sel = [self._clips[int(cur[0])]] if cur and int(cur[0]) in self._clips else self._selected_clips()[:1]
+        else:
+            sel = self._selected_clips()
         if not sel:
             return
         if act == "lire":
-            open_path(sel[0]["fichier"])
-        elif act == "dossier":
+            self._play_with_sound(sel[0])
+            return
+        if act == "dossier":
             show_in_folder(sel[0]["fichier"])
-        elif act == "fav":
+            return
+        if act in ("fav", "fav_un"):
+            on = 0 if all(m.get("favori") for m in sel) else 1
             for m in sel:
-                self.engine.db.set_moment(m["id"], favori=0 if m.get("favori") else 1)
+                self.engine.db.set_moment(m["id"], favori=on)
         elif act == "exclu":
+            on = 0 if all(m.get("exclu") for m in sel) else 1
             for m in sel:
-                self.engine.db.set_moment(m["id"], exclu=0 if m.get("exclu") else 1)
+                self.engine.db.set_moment(m["id"], exclu=on)
         elif act == "suppr":
-            if messagebox.askyesno(APP, f"Supprimer {len(sel)} clip(s) du disque ?"):
-                for m in sel:
-                    self.engine.delete_moment(m["id"])
+            size = self._fmt_size(sum(m.get("_taille", 0) for m in sel))
+            fav = sum(1 for m in sel if m.get("favori"))
+            msg = f"Supprimer {len(sel)} clip{'s' if len(sel) > 1 else ''} du disque ({size} libérés) ?"
+            if fav:
+                msg += f"\n\nDont {fav} favori{'s' if fav > 1 else ''} ★."
+            if not messagebox.askyesno(APP, msg):
+                return
+            self.clip_player.blank()
+            for m in sel:
+                self.engine.delete_moment(m["id"])
+                self.clips_checked.discard(m["id"])
         elif act == "compil":
-            ids = [m["id"] for m in sel]
+            ids = [m["id"] for m in sorted(sel, key=lambda m: m["cree"])]
             threading.Thread(target=self.engine.compile, kwargs={"ids": ids}, daemon=True).start()
             self.show_tab("Accueil")
             return
         self.refresh_clips()
+        if act in ("fav", "fav_un"):
+            self._clips_preview()
+
+    def _play_with_sound(self, m):
+        """Lecteur complet avec le son (ffplay), sinon le lecteur vidéo de Windows."""
+        import ffmpeg_tools as ff
+        play = ff.find("ffplay")
+        if not m.get("fichier") or not os.path.isfile(m["fichier"]):
+            return
+        if play:
+            ff.popen([play, "-hide_banner", "-loglevel", "error", "-autoexit", "-x", "1280", "-y", "720",
+                      "-window_title", f"HexaClip · {m.get('carte') or ''} round {m.get('round') or ''}",
+                      m["fichier"]], creationflags=0)
+        else:
+            open_path(m["fichier"])
 
     # ------------------------------------------------------------- Compils
     def _page_compils(self):
@@ -1222,6 +1417,8 @@ class App:
             self.quit()
             return
         self.root.withdraw()
+        if getattr(self, "clip_player", None):
+            self.clip_player.stop()
         if not self.told_tray:
             self.told_tray = True
             self.tray.notify("HexaClip continue dans la barre des tâches. Clic droit sur l'icône pour quitter.")

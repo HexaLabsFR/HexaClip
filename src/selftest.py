@@ -194,6 +194,10 @@ def test_pipeline(tmp):
                   f"durée {info['duree']:.1f} s, kills {k}")
             check("écart entre les kills raccourci", 4 < (k[1] - k[0]) < 9.5, f"{k[1] - k[0]:.1f} s au lieu de 12.5 s")
             check("miniature du round", bool(m.get("miniature")) and os.path.isfile(m["miniature"]))
+            import apercu
+            r = ff.run(apercu.frame_cmd(m["fichier"], frames=3), timeout=60)
+            check("aperçu intégré (onglet Clips)", r.returncode == 0 and len(r.stdout) == 3 * apercu.W * apercu.H * 3,
+                  f"{len(r.stdout)} octets")
     finally:
         e.recorder.stop()
         e.cs2_running = False
