@@ -1026,8 +1026,25 @@ class App:
         r = tk.Frame(f, bg=C["bg"])
         r.pack(fill="x", pady=4)
         self.button(r, "Voir un aperçu des transitions cochées", self._preview_transitions).pack(side="left")
+        self.button(r, "Retrouver mon pack", self._find_pack).pack(side="left", padx=8)
         self.trans_msg = self.label(r, "", 10, "muted")
         self.trans_msg.pack(side="left", padx=12)
+
+    def _find_pack(self):
+        def run():
+            p = self.engine.detect_pack(force=True)
+
+            def done():
+                if p:
+                    self.vars["compil_pack_fichier"][0].set(p)
+                    self.vars["compil_pack_coupe"][0].set(str(self.cfg["compil_pack_coupe"]))
+                    self.trans_msg.configure(text=f"Trouvé : {os.path.basename(p)}", fg=C["good"])
+                else:
+                    self.trans_msg.configure(text="Aucune transition de pack trouvée : choisis le fichier.",
+                                             fg=C["warn"])
+            self.call(done)
+        self.trans_msg.configure(text="Recherche…", fg=C["muted"])
+        threading.Thread(target=run, daemon=True).start()
 
     def _preview_transitions(self):
         import transitions as tr

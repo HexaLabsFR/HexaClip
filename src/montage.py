@@ -295,7 +295,16 @@ def build(chosen, out_path, opts):
         args += pre + ["-i", info["file"]]
         si = idx
         idx += 1
-        fit = (f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}," if info.get("fit") else "")
+        fit = ""
+        if info.get("fit") == "large":
+            # transition horizontale (OBS 16:9) : un peu moins de zoom pour garder le logo entier,
+            # puis le haut et le bas prolongés pour couvrir tout l'écran vertical
+            h = int(H * 0.82) // 2 * 2
+            b = (H - h) // 2
+            fit = (f"scale=-2:{h},crop={W}:{h},format=gbrap,pad={W}:{H}:0:{b}:color=black@0,"
+                   f"fillborders=top={b}:bottom={H - h - b}:mode=smear,")
+        elif info.get("fit"):
+            fit = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
         chains.append(f"[{si}:v]{fit}format=rgba,fps={FPS},split={len(uses)}" +
                       "".join(f"[s{src}{j}]" for j in range(len(uses))))
         for j, at in enumerate(uses):
@@ -399,7 +408,9 @@ def prepare_transitions(opts, th, work, log=print):
     if "pack" in besoin and pack_ok:
         info = ff.probe(pack)
         cut = float(opts.get("pack_cut") or 0) or info["duree"] / 2
-        stingers["pack"] = {"file": pack, "cut": min(cut, max(0.05, info["duree"] - 0.05)), "fit": True,
+        wide = info["w"] and info["h"] and info["w"] / info["h"] > 1.2
+        stingers["pack"] = {"file": pack, "cut": min(cut, max(0.05, info["duree"] - 0.05)),
+                            "fit": "large" if wide else True,
                             "audio": info["son"],
                             "webm_alpha": pack.lower().endswith(".webm") and ff.has_decoder("libvpx-vp9")}
     opts["stingers"] = stingers

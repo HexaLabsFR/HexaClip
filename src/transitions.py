@@ -128,3 +128,65 @@ def catalogue(out_path, opts, ids, log=print):
     if r.returncode != 0:
         raise RuntimeError((r.stderr or b"").decode("utf-8", "ignore")[-600:])
     return out_path
+
+
+# ----------------------------------------------------------------------------
+# Recherche automatique de la transition d'un pack Twitch sur le PC
+# ----------------------------------------------------------------------------
+VIDEO_EXT = (".webm", ".mov", ".mkv", ".mp4")
+
+
+def _cut_from_readme(folder):
+    """Lit « Point de transition : 700 ms » dans un LISEZ-MOI / README du pack (en secondes)."""
+    import os
+    import re
+    for up in range(4):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            names = []
+        for n in names:
+            if n.lower().endswith(".txt") and re.search(r"lisez|readme|lis-moi|info", n, re.I):
+                try:
+                    with open(os.path.join(folder, n), encoding="utf-8", errors="ignore") as f:
+                        m = re.search(r"point de transition\s*[:=]\s*(\d+(?:[.,]\d+)?)\s*(ms|s)", f.read(), re.I)
+                    if m:
+                        v = float(m.group(1).replace(",", "."))
+                        return v / 1000 if m.group(2).lower() == "ms" else v
+                except OSError:
+                    pass
+        folder = os.path.dirname(folder)
+    return 0.0
+
+
+def find_pack():
+    """Cherche une transition de pack (stinger) dans Téléchargements, Bureau, Documents, Vidéos.
+    Renvoie (chemin, coupe_en_s) ou (None, 0)."""
+    import os
+    home = os.path.expanduser("~")
+    roots = [os.path.join(home, n) for n in ("Downloads", "Téléchargements", "Desktop", "Bureau", "Documents",
+                                             "Videos", "Vidéos")]
+    roots += [os.path.join(home, "OneDrive", n) for n in ("Desktop", "Bureau", "Documents")]
+    found = []
+    for r in roots:
+        if not os.path.isdir(r):
+            continue
+        base_depth = r.rstrip(os.sep).count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(r):
+            if dirpath.count(os.sep) - base_depth >= 4:
+                dirnames[:] = []
+            low_dir = dirpath.lower()
+            if "hexaclip" in low_dir:
+                continue
+            for fn in filenames:
+                low = fn.lower()
+                if low.endswith(VIDEO_EXT) and ("transition" in low or "stinger" in low or
+                                                ("transition" in low_dir and "pack" in low_dir)):
+                    p = os.path.join(dirpath, fn)
+                    score = ("pack" in low_dir) + ("twitch" in low_dir) + low.endswith(".webm")
+                    found.append((score, os.path.getmtime(p), p))
+    if not found:
+        return None, 0.0
+    found.sort(reverse=True)
+    p = found[0][2]
+    return p, _cut_from_readme(os.path.dirname(p))

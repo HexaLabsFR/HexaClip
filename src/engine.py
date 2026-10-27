@@ -139,10 +139,31 @@ class Engine:
         if not cfg_installed():
             ok, msg = install_cfg()
             self.emit("info" if ok else "erreur", msg)
+        self.detect_pack()
         self.detect_capture()
         self.cleanup_old()
         if self.faceit.configured():
             self.refresh_faceit()
+
+    def detect_pack(self, force=False):
+        """Trouve la transition de ton pack Twitch (stinger) pour la mettre après l'intro."""
+        cur = self.cfg["compil_pack_fichier"]
+        if cur and os.path.isfile(cur) and not force:
+            return cur
+        try:
+            import transitions
+            path, cut = transitions.find_pack()
+        except Exception:
+            log_error("recherche du pack")
+            return None
+        if path:
+            self.cfg["compil_pack_fichier"] = path
+            if cut:
+                self.cfg["compil_pack_coupe"] = round(float(cut), 3)
+            self.cfg.save()
+            self.emit("info", f"Transition de ton pack trouvée : {os.path.basename(path)} "
+                              f"(coupe à {self.cfg['compil_pack_coupe'] or 'mi-parcours'} s), utilisée après l'intro.")
+        return path
 
     def detect_capture(self):
         self.busy = "Test de la capture sur ce PC…"
