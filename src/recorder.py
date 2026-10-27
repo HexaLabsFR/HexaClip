@@ -289,6 +289,74 @@ def detect_method(cfg, log=print):
 
 
 # ----------------------------------------------------------------------------
+# Contrôle des clips : horodatages décalés, image figée
+# ----------------------------------------------------------------------------
+def stream_starts(path):
+    """(début vidéo, début son ou None, durée vidéo, durée son) en secondes."""
+    import json
+    r = ff.run([ff.find("ffprobe"), "-v", "error", "-print_format", "json", "-show_streams", path], timeout=30)
+    d = json.loads((r.stdout or b"{}").decode("utf-8", "ignore") or "{}")
+    v = a = None
+    for st in d.get("streams", []):
+        if st.get("codec_type") == "video" and v is None:
+            v = st
+        elif st.get("codec_type") == "audio" and a is None:
+            a = st
+
+    def f(st, k):
+        try:
+            return float(st.get(k)) if st and st.get(k) not in (None, "N/A") else None
+        except (TypeError, ValueError):
+            return None
+    return f(v, "start_time"), f(a, "start_time"), f(v, "duration"), f(a, "duration")
+
+
+def bad_timestamps(path):
+    vs, as_, vd, ad = stream_starts(path)
+    if vs is None:
+        return False
+    if vs > 0.5:
+        return True
+    if as_ is not None and (abs(as_ - vs) > 0.5 or (vd and ad is not None and ad < 0.6 * vd)):
+        return True
+    return False
+
+
+def fix_timestamps(path):
+    """Remet vidéo et son à zéro quand un clip a des horodatages décalés (image figée dans les lecteurs).
+    Renvoie True si le fichier a été réparé."""
+    if not bad_timestamps(path):
+        return False
+    tmp = path + ".repare.mp4"
+    r = ff.run([ff.find("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-i", path,
+                "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy", "-bsf:v", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS",
+                "-c:a", "aac", "-b:a", "160k", "-af", "asetpts=PTS-STARTPTS,apad", "-shortest",
+                "-movflags", "+faststart", tmp], timeout=300)
+    if r.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1000:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    os.replace(tmp, path)
+    return True
+
+
+def frozen_video(path, w=32, h=18):
+    """True si toutes les images clés du clip sont identiques (capture d'écran restée bloquée)."""
+    r = ff.run([ff.find("ffmpeg"), "-hide_banner", "-loglevel", "error", "-skip_frame", "nokey", "-i", path,
+                "-an", "-vf", f"scale={w}:{h},format=gray", "-f", "rawvideo", "-"], timeout=120)
+    data, n = r.stdout or b"", w * h
+    frames = [data[i:i + n] for i in range(0, len(data) - n + 1, n)]
+    if len(frames) < 3:
+        return False
+    for a, b in zip(frames, frames[1:]):
+        if sum(abs(x - y) for x, y in zip(a, b)) / n > 1.5:
+            return False
+    return True
+
+
+# ----------------------------------------------------------------------------
 # Enregistreur
 # ----------------------------------------------------------------------------
 class Recorder:
@@ -301,6 +369,7 @@ class Recorder:
         self.method = None
         self.started_wall = 0.0
         self._offs = collections.deque(maxlen=40)   # (heure murale - temps du flux) observés
+        self._prog = collections.deque(maxlen=40)   # (heure murale, temps du flux) pour repérer une capture lente
         self._seg_lines = []
         self._seg_pos = 0
         self._lock = threading.Lock()
@@ -318,6 +387,7 @@ class Recorder:
         os.makedirs(self.buf_dir, exist_ok=True)
         self.method = method
         self._offs.clear()
+        self._prog.clear()
         self._seg_lines, self._seg_pos = [], 0
         fps, src = method["fps"], method["source"]
         q = method.get("qualite", 21)
@@ -407,6 +477,28 @@ class Recorder:
         except Exception:
             pass
 
+    def health(self):
+        """None si tout va bien, sinon la raison : « lente » (le flux prend du retard sur l'horloge) ou
+        « figée » (5 morceaux de suite de taille identique : l'écran capté ne bouge plus)."""
+        if not self.running or time.time() - self.started_wall < 20:
+            return None
+        pr = list(self._prog)
+        if len(pr) >= 10:
+            (w0, s0), (w1, s1) = pr[0], pr[-1]
+            if w1 - w0 >= 10 and (s1 - s0) < 0.7 * (w1 - w0):
+                return "lente"
+        segs = self.segments()[-6:-1]          # le dernier est en cours d'écriture
+        if len(segs) == 5:
+            sizes = []
+            for name, _, _ in segs:
+                try:
+                    sizes.append(os.path.getsize(os.path.join(self.buf_dir, name)))
+                except OSError:
+                    return None
+            if min(sizes) > 0 and max(sizes) <= min(sizes) * 1.003:
+                return "figée"
+        return None
+
     @property
     def audio_name(self):
         a = self.audio
@@ -435,7 +527,9 @@ class Recorder:
                     except ValueError:
                         continue
                     if us > 0:
-                        self._offs.append(time.time() - us / 1e6)
+                        now = time.time()
+                        self._offs.append(now - us / 1e6)
+                        self._prog.append((now, us / 1e6))
         except Exception:
             pass
 
@@ -532,6 +626,10 @@ class Recorder:
                 "-i", lst, "-c", "copy", "-bsf:a", "aac_adtstoasc", "-avoid_negative_ts", "make_zero",
                 "-movflags", "+faststart", out_path], timeout=120, check=True)
         shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            fix_timestamps(out_path)
+        except Exception:
+            pass
 
         def to_file(wall):
             st = wall - off

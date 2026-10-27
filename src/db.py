@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS moments (
     kills_hs TEXT,                  -- JSON [true, false…] headshot de chaque kill
     choix TEXT,                     -- JSON indices des kills choisis pour la compil (NULL = automatique)
     miniature TEXT,                 -- image PNG du round
-    partie INTEGER                  -- numéro de partie dans la session
+    partie INTEGER,                 -- numéro de partie dans la session
+    defaut TEXT                     -- problème repéré sur le fichier (« figée »)
 );
 CREATE TABLE IF NOT EXISTS compils (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +58,7 @@ class DB:
             self.c.executescript(SCHEMA)
             # bases créées par la 0.1 : ajouter les colonnes manquantes
             have = {r[1] for r in self.c.execute("PRAGMA table_info(moments)")}
-            for col, typ in (("kills_hs", "TEXT"), ("choix", "TEXT"), ("miniature", "TEXT"), ("partie", "INTEGER")):
+            for col, typ in (("kills_hs", "TEXT"), ("choix", "TEXT"), ("miniature", "TEXT"), ("partie", "INTEGER"), ("defaut", "TEXT")):
                 if col not in have:
                     self.c.execute(f"ALTER TABLE moments ADD COLUMN {col} {typ}")
             self.c.commit()

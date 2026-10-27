@@ -153,9 +153,10 @@ class DemoDialog:
         self.tv.bind("<space>", lambda e: self._toggle([int(i) for i in self.tv.selection()]))
         self.tv.bind("<Double-1>", lambda e: "break")
 
-        self.note = app.label(w, "CS2 va s'ouvrir en mode démo (ferme-le avant s'il est déjà lancé). Laisse le jeu "
-                                 "au premier plan et ne touche à rien pendant la lecture : HexaClip filme chaque "
-                                 "round coché.", 9, "muted", wraplength=700, justify="left")
+        self.note = app.label(w, "HexaClip ouvre CS2 en mode démo (il le relance s'il est déjà ouvert). Laisse le jeu "
+                                 "au premier plan et ne touche à rien pendant la lecture : HexaClip pilote CS2 avec la "
+                                 "touche Arrêt défil et filme chaque round coché.", 9, "muted", wraplength=700,
+                              justify="left")
         self.note.pack(side="bottom", anchor="w", pady=(10, 0), before=box, **pad)
         self.prog_box = tk.Frame(w, bg=C["bg"])
         self.prog = ttk.Progressbar(self.prog_box, style="Hexa.Horizontal.TProgressbar", orient="horizontal",
@@ -276,9 +277,17 @@ class DemoDialog:
 
     # --- lecture -----------------------------------------------------------
     def _start(self):
+        from tkinter import messagebox
         ch = self._chosen()
         if not ch:
             return
+        if self.demos.cs2_alive() and not self.demos.cs2_in_demo_mode():
+            if not messagebox.askyesno(APP, "CS2 est ouvert. HexaClip doit le relancer en mode démo pour piloter la "
+                                            "lecture.\n\nFermer CS2 maintenant ?", parent=self.win):
+                return
+            self.est.configure(text="Fermeture de CS2…", fg=C["fg"])
+            self.win.update_idletasks()
+            self.demos.kill_cs2()
         self.extra.pack_forget()
         d = self.app.engine.start_demo(self.info, self._steamid(), ch)
         self.go.pack_forget()
@@ -656,7 +665,7 @@ class App:
             ms = db.moments(session=val, limit=1000)
         else:
             ms = db.moments(since=time.time() - val * 86400, limit=1000)
-        ms = [m for m in ms if m.get("fichier") and os.path.isfile(m["fichier"])]
+        ms = [m for m in ms if m.get("fichier") and os.path.isfile(m["fichier"]) and m.get("defaut") != "figée"]
         ms.sort(key=lambda m: m["cree"])
         self.mt_moments = ms
         auto = self.engine.effective_choice(ms, self.engine.compile_budget(self._fin_on()))
@@ -854,7 +863,8 @@ class App:
         sb.pack(side="right", fill="y")
         return box, tv
 
-    CLIP_FILTERS = ["Tous les clips", "★ Favoris", "3K et plus", "Aujourd'hui", "Écartés des compils"]
+    CLIP_FILTERS = ["Tous les clips", "★ Favoris", "3K et plus", "Aujourd'hui", "Écartés des compils",
+                    "Images figées"]
 
     def _page_clips(self):
         tk, ttk = self.tk, self.ttk
@@ -954,7 +964,8 @@ class App:
                 or (flt == "★ Favoris" and m.get("favori"))
                 or (flt == "3K et plus" and m["type"] in ("3k", "4k", "ace"))
                 or (flt == "Aujourd'hui" and dt.date.fromtimestamp(m["cree"]) == today)
-                or (flt == "Écartés des compils" and m.get("exclu"))]
+                or (flt == "Écartés des compils" and m.get("exclu"))
+                or (flt == "Images figées" and m.get("defaut") == "figée")]
         key, desc = self._clips_sort_key
         order = {"quand": lambda m: m["cree"], "type": lambda m: (m.get("kills") or 0, m["cree"]),
                  "carte": lambda m: ((m.get("carte") or "").lower(), m["cree"]), "taille": lambda m: m["_taille"]}
@@ -963,7 +974,8 @@ class App:
         self.clips_checked &= set(self._clips)
         for m in view:
             exists = m["_taille"] > 0
-            etat = "écarté" if m.get("exclu") else ("" if exists else "fichier absent")
+            etat = "image figée" if m.get("defaut") == "figée" else (
+                "écarté" if m.get("exclu") else ("" if exists else "fichier absent"))
             on = m["id"] in self.clips_checked
             tv.insert("", "end", iid=str(m["id"]), tags=("coche",) if on else (("absent",) if not exists else ()),
                       values=("☑" if on else "☐", fmt_date(m["cree"]), LABELS.get(m["type"], m["type"]),

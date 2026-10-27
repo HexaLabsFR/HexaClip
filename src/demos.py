@@ -227,6 +227,98 @@ class Netcon:
                 pass
 
 
+# ----------------------------------------------------------------------------
+# Pilotage de CS2 sous Windows : fichier .cfg + touche Arrêt défil
+# ----------------------------------------------------------------------------
+# La console réseau (-netconport) ne marche pas dans CS2 sous Windows (sauf avec les outils du Workshop).
+# HexaClip lance donc CS2 avec « +exec hexaclip_demo » : ce fichier associe la touche Arrêt défil
+# (Scroll Lock, jamais utilisée en jeu) à « exec hexaclip_cmd ». Pour envoyer des commandes, HexaClip
+# écrit hexaclip_cmd.cfg puis appuie sur cette touche dans la fenêtre de CS2.
+KEY_NAME = "SCROLLLOCK"
+CMD_CFG, INIT_CFG, DEMO_NAME = "hexaclip_cmd", "hexaclip_demo", "hexaclip_demo"
+
+
+def press_key():
+    """Appuie sur Arrêt défil dans la fenêtre de CS2 (mise au premier plan si besoin)."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    def send(vk, scan, flags):
+        i = INPUT(type=1)
+        i.u.ki = KEYBDINPUT(vk, scan, flags, 0, 0)
+        user32.SendInput(1, ctypes.byref(i), ctypes.sizeof(INPUT))
+
+    hwnd = user32.FindWindowW(None, "Counter-Strike 2")
+    if hwnd and user32.GetForegroundWindow() != hwnd:
+        send(0x12, 0, 0)               # Alt : autorise la mise au premier plan
+        send(0x12, 0, 2)
+        user32.ShowWindow(hwnd, 9)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.15)
+    send(0x91, 0x46, 0x8)              # Arrêt défil (code de touche matériel), appui
+    time.sleep(0.04)
+    send(0x91, 0x46, 0x8 | 0x2)        # relâché
+    return bool(hwnd)
+
+
+class CfgConsole:
+    """Envoie des commandes à CS2 par hexaclip_cmd.cfg + touche."""
+
+    def __init__(self, cfg_dir):
+        self.cfg_dir = cfg_dir
+        self.alive = True
+
+    def send(self, *cmds):
+        path = os.path.join(self.cfg_dir, CMD_CFG + ".cfg")
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(cmds) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        press_key()
+        time.sleep(0.12)
+
+    def close(self):
+        # la touche reste associée tant que CS2 tourne : on y laisse une commande sans effet
+        try:
+            with open(os.path.join(self.cfg_dir, CMD_CFG + ".cfg"), "w", encoding="utf-8") as f:
+                f.write("cl_draw_only_deathnotices 0\n")
+        except OSError:
+            pass
+
+
+class NetconConsole:
+    """Console réseau (CS2 lancé avec -netconport et les outils du Workshop, ou tests)."""
+
+    def __init__(self, nc):
+        self.nc = nc
+
+    @property
+    def alive(self):
+        return self.nc.alive
+
+    def send(self, *cmds):
+        for c in cmds:
+            self.nc.send(c)
+
+    def close(self):
+        self.nc.close()
+
+
 def steam_exe():
     if not IS_WIN:
         return None
@@ -239,24 +331,69 @@ def steam_exe():
         return None
 
 
-def launch_cs2(port=NETCON_PORT):
-    """Lance CS2 avec la console réseau ouverte (pour cette fois seulement)."""
-    exe = steam_exe()
-    args = ["-applaunch", CS2_APPID, "-netconport", str(port), "-novid"]
-    if exe:
-        subprocess.Popen([exe] + args, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
-        return True
-    if IS_WIN:
-        os.startfile("steam://rungameid/730")     # sans options : il faudra l'option de lancement
-    return False
+_launched = {"pid": None}          # CS2 lancé par HexaClip en mode démo (touche déjà associée)
 
 
-def kill_cs2():
+def cs2_pid():
     try:
         import psutil
-        for p in psutil.process_iter(["name"]):
-            if (p.info.get("name") or "").lower() == "cs2.exe":
-                p.terminate()
+        return next((p.pid for p in psutil.process_iter(["name"]) if (p.info.get("name") or "").lower() == "cs2.exe"),
+                    None)
+    except Exception:
+        return None
+
+
+def cs2_in_demo_mode():
+    pid = cs2_pid()
+    return bool(pid) and pid == _launched["pid"]
+
+
+def place_demo(dem, csgo_dir):
+    """Copie la démo dans le dossier du jeu sous un nom libre (l'ancienne peut être encore ouverte par CS2)."""
+    import shutil
+    for name in (DEMO_NAME, DEMO_NAME + "_b"):
+        target = os.path.join(csgo_dir, name + ".dem")
+        try:
+            if os.path.isfile(target):
+                os.remove(target)
+            shutil.copyfile(dem, target)
+            return name
+        except OSError:
+            continue
+    raise DemoError("Impossible de copier la démo dans le dossier de CS2.")
+
+
+def write_init_cfg(cfg_dir, settings=(), name=DEMO_NAME):
+    lines = [f'bind "{KEY_NAME}" "exec {CMD_CFG}"', *settings, f"playdemo {name}"]
+    with open(os.path.join(cfg_dir, INIT_CFG + ".cfg"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def launch_cs2_demo():
+    """Lance CS2 en exécutant hexaclip_demo.cfg (association de la touche + lecture de la démo)."""
+    exe = steam_exe()
+    args = ["-applaunch", CS2_APPID, "-novid", "+exec", INIT_CFG]
+    if not exe:
+        return False
+    subprocess.Popen([exe] + args, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    return True
+
+
+def cs2_alive():
+    try:
+        import psutil
+        return any((p.info.get("name") or "").lower() == "cs2.exe" for p in psutil.process_iter(["name"]))
+    except Exception:
+        return False
+
+
+def kill_cs2(wait=20):
+    try:
+        import psutil
+        procs = [p for p in psutil.process_iter(["name"]) if (p.info.get("name") or "").lower() == "cs2.exe"]
+        for p in procs:
+            p.terminate()
+        psutil.wait_procs(procs, timeout=wait)
     except Exception:
         pass
 
@@ -291,6 +428,7 @@ class DemoClipper:
         self._gsi_kills = []          # heures murales des kills vus par la liaison CS2 pendant la lecture
         self._last_rk = None
         self.gsi_map = ""
+        self.gsi_player = ""
         self.session = "demo-" + os.path.basename(info.get("fichier", "demo")).split(".")[0][-24:]
 
     # --- liaison CS2 pendant la démo -------------------------------------
@@ -299,6 +437,8 @@ class DemoClipper:
         if mp.get("name"):
             self.gsi_map = mp["name"]
         pl = payload.get("player") or {}
+        if pl.get("steamid"):
+            self.gsi_player = str(pl["steamid"])
         if str(pl.get("steamid", "")) != self.steamid:
             self._last_rk = None
             return
@@ -310,7 +450,7 @@ class DemoClipper:
 
     # --- avancement (barre de chargement) ----------------------------------
     STEPS = {"préparation": 0.0, "préparation de la démo": 0.01, "lancement de CS2": 0.03,
-             "chargement de la démo": 0.08}
+             "chargement de la démo": 0.06}
     PLAY_FROM = 0.12
 
     def progress(self):
@@ -340,46 +480,80 @@ class DemoClipper:
             self._check()
             time.sleep(0.05)
 
-    def _connect_cs2(self):
+    SETTINGS = ("demo_timescale 1", "cl_draw_only_deathnotices 1", "spec_show_xray 0")
+
+    def _wait_map(self, want, timeout):
+        end = time.time() + timeout
+        while time.time() < end and self.gsi_map != want:
+            self._sleep(1)
+        return self.gsi_map == want
+
+    def _open_cs2(self, dem):
+        """Prépare le pilotage de CS2 et lance la lecture de la démo. Renvoie la console."""
+        want = self.info.get("carte", "")
+        # 1) console réseau disponible (CS2 lancé avec les outils du Workshop, ou tests)
         if self.nc.connect():
-            return
-        if self.e.cs2_running or self.e._cs2_alive():
+            ctl = NetconConsole(self.nc)
+            self.state = "chargement de la démo"
+            ctl.send(f'playdemo "{dem}"')
+            self._wait_map(want, 120)
+            return ctl
+        if not IS_WIN:
+            raise DemoError("Lecture des démos disponible sous Windows uniquement.")
+        from gsi_cs2 import find_cs2_cfg_dir
+        cfg_dir = find_cs2_cfg_dir()
+        if not cfg_dir:
+            raise DemoError("Dossier de CS2 introuvable.")
+        if cs2_alive() and not cs2_in_demo_mode():
             raise DemoError("CS2 est ouvert sans le mode démo. Ferme CS2 : HexaClip le relancera lui-même.")
+        # la démo est copiée dans le dossier du jeu (CS2 lit les démos de son dossier csgo)
+        name = place_demo(dem, os.path.dirname(cfg_dir))
+        ctl = CfgConsole(cfg_dir)
+        write_init_cfg(cfg_dir, self.SETTINGS, name)
+        self.state = "chargement de la démo"
+        # 2) CS2 déjà ouvert par une démo précédente : la touche est déjà associée
+        if cs2_alive():
+            self.gsi_map = ""
+            ctl.send(f"exec {INIT_CFG}")
+            if self._wait_map(want, 60):
+                return ctl
+            raise DemoError("CS2 ne répond pas : ferme CS2, HexaClip le relancera en mode démo.")
+        # 3) lancement de CS2 avec « +exec hexaclip_demo »
         self.state = "lancement de CS2"
-        if not launch_cs2():
-            raise DemoError("Steam introuvable. Ajoute « -netconport 2121 » aux options de lancement de CS2, "
-                            "lance CS2 puis réessaie.")
-        end = time.time() + 240
-        while time.time() < end:
-            self._sleep(2)
-            if self.nc.connect():
-                self._sleep(8)             # laisser le menu finir de charger
-                return
-        raise DemoError("CS2 ne s'est pas ouvert en mode démo (vérifie Steam).")
+        if not launch_cs2_demo():
+            raise DemoError("Steam introuvable.")
+        end = time.time() + 120
+        while time.time() < end and not cs2_alive():
+            self._sleep(1)
+        if not cs2_alive():
+            raise DemoError("CS2 ne s'est pas lancé (vérifie Steam).")
+        _launched["pid"] = cs2_pid()
+        self.state = "chargement de la démo"
+        if not self._wait_map(want, 240):
+            self.log("Démo : la liaison CS2 n'a pas confirmé le chargement, on continue.")
+        return ctl
 
     def run(self):
         e, tr = self.e, float(self.info.get("tickrate") or 64)
         pre, post = float(e.cfg["avant_s"]), float(e.cfg["apres_s"])
+        ctl = None
         try:
             self.state = "préparation de la démo"
             dem = prepare_dem(self.info["fichier"])
-            self._connect_cs2()
+            ctl = self._open_cs2(dem)
             # la capture tourne pendant la lecture (même si la capture auto est coupée)
-            if not e.recorder.running:
-                if not e.method or not e.start_recording():
-                    raise DemoError("La capture ne démarre pas (voir Accueil).")
-            self.state = "chargement de la démo"
-            self.nc.send(f'playdemo "{dem}"')
-            want = self.info.get("carte", "")
-            end = time.time() + 120
-            while time.time() < end and self.gsi_map != want:
+            end = time.time() + 20
+            while not e.recorder.running and time.time() < end:
                 self._sleep(1)
-            self._sleep(6 if self.gsi_map == want else 4)
-            for cmd in ("demo_timescale 1", "cl_draw_only_deathnotices 1", "spec_show_xray 0",
-                        "cl_spec_show_bindings 0", "demo_pause"):
-                self.nc.send(cmd)
+            if not e.recorder.running and (not e.method or not e.start_recording()):
+                raise DemoError("La capture ne démarre pas (voir Accueil).")
+            self._sleep(5)                       # fin du chargement (textures, son)
+            ctl.send(*self.SETTINGS, "demo_pause")
             acc = int(self.steamid) - STEAM_ID_BASE if self.steamid.isdigit() else 0
             nom = next((j["nom"] for j in self.info.get("joueurs", []) if j["steamid"] == self.steamid), "")
+            cam = [f"spec_lock_to_accountid {acc}"] if acc else []
+            if nom:
+                cam.append(f'spec_player "{nom}"')
             for r in self.rounds:
                 self._check()
                 times = []
@@ -388,20 +562,19 @@ class DemoClipper:
                     self.state = f"round {r['round']} ({self.done_n + 1}/{self.total})"
                     self._seg_len = (b - a) / tr + SETTLE_S
                     self._seg_start = time.time()
-                    self.nc.send("demo_pause")
-                    self.nc.send(f"demo_gototick {a}")
-                    self.nc.send("demo_pause")
+                    ctl.send("demo_pause", f"demo_gototick {a}", "demo_pause")
                     self._sleep(SETTLE_S * 0.5)
-                    if acc:
-                        self.nc.send(f"spec_lock_to_accountid {acc}")
-                    if nom:
-                        self.nc.send(f'spec_player "{nom}"')
+                    if cam:
+                        ctl.send(*cam)
                     self._sleep(SETTLE_S * 0.5)
+                    if self.gsi_player and self.gsi_player != self.steamid and cam:
+                        ctl.send(*cam)                     # caméra pas encore sur le joueur : on insiste
+                        self._sleep(0.5)
                     self._gsi_kills, self._last_rk = [], None
                     w0 = time.time()
-                    self.nc.send("demo_resume")
+                    ctl.send("demo_resume")
                     self._sleep((b - a) / tr)
-                    self.nc.send("demo_pause")
+                    ctl.send("demo_pause")
                     calc = [w0 + (k["tick"] - a) / tr for k in ks]
                     seen = [t for t in self._gsi_kills if w0 <= t <= w0 + (b - a) / tr + 1]
                     ok = len(seen) == len(ks) and all(abs(x - y) < 1.5 for x, y in zip(seen, calc))
@@ -411,7 +584,6 @@ class DemoClipper:
                     self._seg_start = None
                 self._clip(r, r["kills"], times)      # un clip par round, comme en direct
             self.state = "terminé"
-            self.nc.send("cl_draw_only_deathnotices 0")
         except DemoError as ex:
             self.error = str(ex)
             self.state = "arrêté" if self.cancelled else "erreur"
@@ -420,10 +592,12 @@ class DemoClipper:
             self.state = "erreur"
         finally:
             try:
-                if self.nc.alive:
-                    self.nc.send("cl_draw_only_deathnotices 0")
-            except DemoError:
+                if ctl is not None and ctl.alive:
+                    ctl.send("cl_draw_only_deathnotices 0", "demo_pause")
+            except Exception:
                 pass
+            if ctl is not None:
+                ctl.close()
             self.nc.close()
             cleanup()
 

@@ -130,6 +130,24 @@ def test_audio():
     check("son continu même dans le silence", 0.85 < secs < 1.2 and p.last_sound > 0, f"{secs:.2f} s envoyées")
 
 
+def test_clip_checks(good, tmp):
+    """Clip aux horodatages décalés réparé, clip à l'image figée repéré, bon clip laissé tel quel."""
+    import ffmpeg_tools as ff
+    import recorder
+    bad = os.path.join(tmp, "decale.mp4")
+    ff.run([ff.find("ffmpeg"), "-v", "error", "-y", "-i", good, "-map", "0:v", "-map", "0:a", "-c", "copy",
+            "-output_ts_offset", "0", "-bsf:v", "setts=pts=PTS+40/TB:dts=DTS+40/TB", bad], timeout=60)
+    was_bad = recorder.bad_timestamps(bad)
+    fixed = recorder.fix_timestamps(bad)
+    check("clip aux horodatages décalés réparé", was_bad and fixed and not recorder.bad_timestamps(bad),
+          str(recorder.stream_starts(bad)))
+    still = os.path.join(tmp, "fige.mp4")
+    ff.run([ff.find("ffmpeg"), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=30:d=6",
+            "-c:v", "libx264", "-g", "30", "-pix_fmt", "yuv420p", still], timeout=60)
+    check("image figée repérée", recorder.frozen_video(still) and not recorder.frozen_video(good)
+          and not recorder.bad_timestamps(good))
+
+
 def test_demo_logic():
     """Démos : rounds d'un joueur, découpage des passages, outil d'analyse livré."""
     import demos
@@ -273,6 +291,7 @@ def test_pipeline(tmp):
             check("écart entre les kills raccourci", 4 < (k[1] - k[0]) < 9.5, f"{k[1] - k[0]:.1f} s au lieu de 12.5 s")
             check("miniature du round", bool(m.get("miniature")) and os.path.isfile(m["miniature"]))
             test_demo(e, tmp)
+            test_clip_checks(m["fichier"], tmp)
             import apercu
             r = ff.run(apercu.frame_cmd(m["fichier"], frames=3), timeout=60)
             check("aperçu intégré (onglet Clips)", r.returncode == 0 and len(r.stdout) == 3 * apercu.W * apercu.H * 3,

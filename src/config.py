@@ -35,6 +35,7 @@ DEFAULTS = {
     "compil_cadrage": "flou",        # flou (jeu entier + fond flou) ou zoom (centre plein écran)
     "compil_badges": True,           # 3K / 4K / ACE à l'écran
     "pseudo": "",                    # ton pseudo : intro, plaque en haut des clips, écran de fin
+    "clips_verifies": 0,             # contrôle unique des anciens clips (horodatages, image figée)
     "steamid": "",                   # ton SteamID64 (appris par la liaison CS2 ou Faceit) : joueur par défaut des démos
     "compil_style": "spectre",       # spectre (dégradé + viseur, identité du pseudo) ou hexaclip (menthe)
     "compil_intro": True,            # intro animée avec l'accroche (ex. « ACE SUR MIRAGE »)

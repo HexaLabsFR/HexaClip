@@ -98,6 +98,7 @@ class Engine:
         self.cs2_running = False
         self.last_gsi = 0.0                  # dernier message de CS2 (preuve que le jeu tourne)
         self.demo = None                     # lecture de démo en cours (demos.DemoClipper)
+        self._last_heal = 0.0
         self.session_id = None
         self.session_start = None
         self.session_moments = 0
@@ -142,6 +143,7 @@ class Engine:
             ok, msg = install_cfg()
             self.emit("info" if ok else "erreur", msg)
         self.recorder._kill_orphan()
+        threading.Thread(target=self.check_old_clips, daemon=True).start()
         self.detect_pack()
         self.detect_capture()
         self.cleanup_old()
@@ -227,6 +229,12 @@ class Engine:
                         self.start_recording()
                 elif self.recorder.running:
                     restarts = 0
+                    why = self.recorder.health() if self.cs2_running else None
+                    if why and time.time() - self._last_heal > 45:
+                        self._last_heal = time.time()
+                        log(f"Capture {why} (l'écran capté ne bouge plus ou prend du retard) : relance. "
+                            + self.recorder.error_tail()[-300:])
+                        self.start_recording()
                 self.tracker.tick()
                 # relevé Faceit : toutes les 4 min pendant le jeu, toutes les 30 min sinon
                 gap = 240 if self.cs2_running else 1800
@@ -434,6 +442,8 @@ class Engine:
                 choice = {int(k): v for k, v in selection.items()}
             else:
                 ms = self.db.moments_by_ids(ids) if ids else self.db.moments(since=since, session=session, limit=400)
+                if not ids:          # compil automatique : sans les clips écartés ni ceux à l'image figée
+                    ms = [m for m in ms if not m.get("exclu") and m.get("defaut") != "figée"]
                 choice = self.effective_choice(ms, self.compile_budget(bool(fin)))
             items = [build_item(m, choice.get(m["id"], [])) for m in ms
                      if choice.get(m["id"]) and m.get("fichier") and os.path.isfile(m["fichier"])]
@@ -496,6 +506,34 @@ class Engine:
             self.faceit.last_error = f"Erreur Faceit : {e}"
             log_error("Faceit")
         return None
+
+    def check_old_clips(self):
+        """Une fois : répare les horodatages des anciens clips et repère ceux à l'image figée (versions 0.3.0)."""
+        if self.cfg["clips_verifies"] >= 1:
+            return
+        from recorder import fix_timestamps, frozen_video
+        fixed = frozen = 0
+        try:
+            for m in self.db.moments(limit=5000):
+                p = m.get("fichier")
+                if not p or not os.path.isfile(p):
+                    continue
+                try:
+                    if fix_timestamps(p):
+                        fixed += 1
+                    if frozen_video(p):
+                        frozen += 1
+                        self.db.set_moment(m["id"], defaut="figée", exclu=1)
+                except Exception:
+                    log_error(f"contrôle de {os.path.basename(p)}")
+            self.cfg["clips_verifies"] = 1
+            self.cfg.save()
+            if fixed or frozen:
+                self.emit("info", f"Anciens clips contrôlés : {fixed} réparé{'s' if fixed > 1 else ''} (lecture "
+                                  f"bloquée), {frozen} à l'image figée écarté{'s' if frozen > 1 else ''} des compils "
+                                  "(filtre « Images figées » dans Clips).")
+        except Exception:
+            log_error("contrôle des anciens clips")
 
     # ------------------------------------------------------------------ ménage
     def cleanup_old(self):
