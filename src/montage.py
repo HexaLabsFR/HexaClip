@@ -257,8 +257,8 @@ def build(chosen, out_path, opts):
 
     # transitions : balayage superposé à chaque coupe + whoosh
     if trans and cuts:
-        from brand import whoosh_track
-        STINGER_CUT = getattr(th, "STINGER_CUT", 0.23)
+        from brand import SIGNAL_FX, static_track, whoosh_track
+        STINGER_CUT = opts.get("stinger_cut") or getattr(th, "STINGER_CUT", 0.23)
         args += ["-i", opts["stinger_file"]]
         sti = idx
         idx += 1
@@ -267,8 +267,14 @@ def build(chosen, out_path, opts):
             chains.append(f"[st{k}]setpts=PTS-STARTPTS+{max(0.0, c - STINGER_CUT):.3f}/TB[sd{k}]")
             chains.append(f"{last_v}[sd{k}]overlay=eof_action=pass:format=auto[tv{k}]")
             last_v = f"[tv{k}]"
+        if opts.get("stinger_fx"):
+            # signal perdu : l'image se dédouble en R/V/B et grésille autour de chaque coupe
+            win = "+".join(f"between(t,{max(0.0, c - SIGNAL_FX):.3f},{c + SIGNAL_FX:.3f})" for c in cuts)
+            chains.append(f"{last_v}rgbashift=rh=-22:bh=22:rv=6:bv=-6:edge=smear:enable='{win}',"
+                          f"noise=alls=38:allf=t+u:enable='{win}',eq=contrast=1.18:saturation=1.3:enable='{win}'[fx]")
+            last_v = "[fx]"
         wpath = os.path.join(opts.get("whoosh_dir") or os.path.dirname(out_path), ".whoosh_tmp.wav")
-        whoosh_track(wpath, total, cuts)
+        (static_track if opts.get("transition_sound") == "static" else whoosh_track)(wpath, total, cuts)
         args += ["-i", wpath]
         wi = idx
         idx += 1
@@ -338,7 +344,20 @@ def make(chosen, out_dir, opts, log=print):
     pseudo = (opts.get("pseudo") or "").strip()
     trans = bool(opts.get("transitions", True))
     try:
-        if trans:
+        kind = opts.get("transition", "signal")
+        if trans and kind == "signal":
+            import brand
+            try:
+                cols = getattr(th, "SIGNAL_COLORS", None)
+                opts["stinger_file"] = brand.render_signal(paths.data(f"transition_signal_{th.__name__}_v1.mov"), cols)
+                opts["stinger_cut"] = brand.SIGNAL_CUT
+                opts["stinger_fx"] = True
+                opts["transition_sound"] = "static"
+                opts["whoosh_dir"] = work
+                tmp.append(os.path.join(work, ".whoosh_tmp.wav"))
+            except Exception as e:
+                log(f"Transitions ignorées : {e}")
+        elif trans:
             try:
                 opts["stinger_file"] = th.render_stinger(paths.data(f"transition_{th.__name__}_v1.mov"))
                 opts["whoosh_dir"] = work

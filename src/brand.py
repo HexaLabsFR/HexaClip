@@ -32,6 +32,7 @@ STINGER_S = 0.46          # durée de la transition
 STINGER_CUT = 0.23        # instant de la coupe dans la transition (écran entièrement couvert)
 OUTRO_S = 2.8
 SLOPE = 0.5               # pente de la coupe du logo (monte vers la droite)
+SIGNAL_COLORS = ((46, 230, 168), (255, 255, 255), (11, 15, 20))
 
 
 def font(size, weight="Bold"):
@@ -296,4 +297,100 @@ def _pipe(cmd, frames, path):
     err = p.stderr.read().decode("utf-8", "ignore")
     if p.wait(180) != 0:
         raise RuntimeError(f"Rendu impossible : {err[-400:]}")
+    return path
+
+
+# ----------------------------------------------------------------------------
+# Transition « signal TV perdu » (commune aux styles, couleurs du style)
+# ----------------------------------------------------------------------------
+SIGNAL_S = 0.5
+SIGNAL_CUT = 0.25        # la coupe a lieu sous la neige, quand l'écran est entièrement brouillé
+SIGNAL_FX = 0.2          # durée (de chaque côté de la coupe) du décalage RVB + bruit sur l'image
+
+
+def signal_frames(colors=((255, 61, 165), (47, 123, 255), (255, 31, 61))):
+    n = int(round(SIGNAL_S * FPS))
+    gw, gh = W // 4, H // 4                       # grain de la neige (4 px)
+    for i in range(n):
+        t = i / FPS
+        rnd = random.Random(7919 * i + 13)
+        d_cut = abs(t - SIGNAL_CUT)
+        k = max(0.0, 1 - d_cut / SIGNAL_CUT) ** 1.6          # intensité du brouillage
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        # 1. neige : entièrement opaque autour de la coupe, puis par bandes
+        full = d_cut < 0.06
+        snow_a = 255 if full else int(200 * max(0.0, (k - 0.45) / 0.55))
+        if snow_a > 0:
+            noise = Image.frombytes("L", (gw, gh), os.urandom(gw * gh)).resize((W, H), Image.NEAREST)
+            snow = Image.merge("RGBA", (noise, noise, noise, Image.new("L", (W, H), snow_a)))
+            img.alpha_composite(snow)
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))       # dessin à part, puis fondu par-dessus
+        d = ImageDraw.Draw(layer)
+        # 2. bandes de glitch (couleurs du style + neige claire)
+        for _ in range(int(2 + 10 * k)):
+            y = rnd.randrange(0, H)
+            h = rnd.randrange(6, 26 + int(90 * k))
+            x0 = rnd.randrange(-200, W // 2)
+            x1 = x0 + rnd.randrange(W // 3, W + 200)
+            if rnd.random() < 0.55:
+                c = rnd.choice(colors)
+                d.rectangle((x0, y, x1, y + h), fill=c + (int(110 + 120 * k),))
+            else:
+                g = rnd.randrange(150, 255)
+                d.rectangle((x0, y, x1, y + h), fill=(g, g, g, int(80 + 150 * k)))
+        img.alpha_composite(layer)
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        # 3. lignes de balayage
+        if k > 0.05:
+            a = int(70 * k)
+            for y in range(0, H, 6):
+                d.line((0, y, W, y), fill=(0, 0, 0, a), width=2)
+        img.alpha_composite(layer)
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        # 4. barre de synchro qui défile
+        if k > 0.1:
+            yb = int((t * 5200) % (H + 300)) - 150
+            d.rectangle((0, yb, W, yb + 140), fill=(255, 255, 255, int(55 * k)))
+        # 5. au pic : l'image s'écrase en une ligne blanche (écran cathodique)
+        if d_cut < 0.035:
+            for w_, a in ((40, 60), (16, 140), (6, 255)):
+                ln = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                ImageDraw.Draw(ln).rectangle((0, H // 2 - w_, W, H // 2 + w_), fill=(255, 255, 255, a))
+                layer.alpha_composite(ln)
+        img.alpha_composite(layer)
+        yield img
+
+
+def render_signal(path, colors=None):
+    if os.path.isfile(path):
+        return path
+    return _encode_rgba(signal_frames(colors) if colors else signal_frames(), path)
+
+
+def _static_burst(buf, rate, center, rnd, gain=0.42):
+    """Grésillement de télé : bruit blanc haché, maximal à la coupe, plus un petit « clac »."""
+    a, b = center - SIGNAL_CUT, center + SIGNAL_CUT
+    hp = 0.0
+    for i in range(max(0, int(a * rate)), min(len(buf) // 2, int(b * rate))):
+        t = i / rate
+        env = max(0.0, 1 - abs(t - center) / SIGNAL_CUT) ** 1.3
+        flutter = 0.55 + 0.45 * (1 if math.sin(2 * math.pi * 55 * t) > 0 else -1) * (0.5 + 0.5 * rnd.random())
+        x = rnd.random() * 2 - 1
+        hp = 0.6 * hp + 0.4 * x
+        s = (x - hp) * env * flutter * gain
+        if 0 <= t - center < 0.012:
+            s += 0.5 * (1 - (t - center) / 0.012)
+        v = max(-32767, min(32767, buf[2 * i] + int(s * 32767)))
+        buf[2 * i] = buf[2 * i + 1] = v
+
+
+def static_track(path, total, cuts):
+    rate = 48000
+    buf = array("h", bytes(4 * int(rate * total + rate)))
+    rnd = random.Random(5)
+    for c in cuts:
+        _static_burst(buf, rate, c, rnd)
+    _write_wav(path, buf, rate)
     return path

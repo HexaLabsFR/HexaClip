@@ -385,7 +385,7 @@ class Engine:
                 "logo": self.cfg["compil_logo"] if os.path.isfile(self.cfg["compil_logo"] or "") else None,
                 "fin": fin, "encodeur": enc,
                 "pseudo": self.cfg["pseudo"].strip(), "transitions": bool(self.cfg["compil_transitions"]),
-                "style": self.cfg["compil_style"],
+                "style": self.cfg["compil_style"], "transition": self.cfg["compil_transition"],
                 "appel": self.cfg["compil_appel"].strip(),
                 "musique": montage.pick_music(self.cfg["musique_dossier"]) if self.cfg["musique_on"] else None,
                 "musique_volume": float(self.cfg["musique_volume"]),

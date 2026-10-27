@@ -37,7 +37,8 @@ DEFAULTS = {
     "pseudo": "",                    # ton pseudo : intro, plaque en haut des clips, écran de fin
     "compil_style": "spectre",       # spectre (dégradé + viseur, identité du pseudo) ou hexaclip (menthe)
     "compil_intro": True,            # intro animée avec l'accroche (ex. « ACE SUR MIRAGE »)
-    "compil_transitions": True,      # balayages diagonaux + whoosh entre les passages
+    "compil_transitions": True,      # transitions entre les passages
+    "compil_transition": "signal",   # signal (télé qui perd le signal) ou balayage (panneau du style)
     "compil_appel": "Abonne-toi pour la suite",   # texte de l'écran de fin (vide = rien)
     "compil_texte": "",              # texte affiché en haut (vide = rien)
     "compil_logo": "",               # PNG perso (vide = logo HexaClip)

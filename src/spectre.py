@@ -34,6 +34,8 @@ OUTRO_S = 3.2
 STINGER_S = 0.36
 STINGER_CUT = 0.18
 
+SIGNAL_COLORS = (GRAD[0], GRAD[2], VISEUR)     # bandes de la transition « signal perdu »
+
 # badges du compteur de kills (drawtext FFmpeg)
 BADGE_FINAL_BOX = "0x8A3DFF@0.96"
 BADGE_FINAL_TEXT = "white"

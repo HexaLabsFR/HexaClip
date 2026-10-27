@@ -963,6 +963,8 @@ class App:
         row("Compteur de kills à l'écran", check("compil_badges"))
         row("Intro animée", check("compil_intro"), "logo + pseudo + accroche, 1,7 s")
         row("Transitions entre les kills", check("compil_transitions"))
+        row("Type de transition", combo("compil_transition", ["signal", "balayage"], 26,
+                                        ["Signal TV perdu (glitch)", "Balayage aux couleurs du style"]))
         row("Texte de fin", entry("compil_appel", 30), "ex. Abonne-toi pour la suite (vide = rien)")
         row("Texte en haut (facultatif)", entry("compil_texte", 30), "ex. le nom de ta chaîne")
         row("Logo perso (PNG transparent)", folder("compil_logo", "Logo PNG", file=True))
