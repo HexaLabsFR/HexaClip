@@ -479,7 +479,7 @@ class Recorder:
 
     def health(self):
         """None si tout va bien, sinon la raison : « lente » (le flux prend du retard sur l'horloge) ou
-        « figée » (5 morceaux de suite de taille identique : l'écran capté ne bouge plus)."""
+        « figée » (8 morceaux de suite, 16 s, de taille identique : l'écran capté ne bouge plus)."""
         if not self.running or time.time() - self.started_wall < 20:
             return None
         pr = list(self._prog)
@@ -487,8 +487,8 @@ class Recorder:
             (w0, s0), (w1, s1) = pr[0], pr[-1]
             if w1 - w0 >= 10 and (s1 - s0) < 0.7 * (w1 - w0):
                 return "lente"
-        segs = self.segments()[-6:-1]          # le dernier est en cours d'écriture
-        if len(segs) == 5:
+        segs = self.segments()[-9:-1]          # le dernier est en cours d'écriture
+        if len(segs) == 8:
             sizes = []
             for name, _, _ in segs:
                 try:

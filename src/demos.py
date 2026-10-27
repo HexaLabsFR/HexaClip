@@ -471,7 +471,7 @@ class DemoClipper:
             except OSError:
                 pass
             self.state = "lancement de CS2"
-            args = [exe, "-insecure", "-novid", "-console", "+playdemo", dem]
+            args = [exe, "-insecure", "-novid", "+demo_ui_mode", "0", "+playdemo", dem]
             proc = subprocess.Popen(args, cwd=os.path.dirname(exe))
             self.proc_started = time.time()
             self.state = "chargement de la démo"
@@ -484,6 +484,13 @@ class DemoClipper:
                     raise DemoError("Le rendu dans CS2 a pris trop de temps (arrêté).")
                 time.sleep(1)
             self._watch_log(logf)
+            try:
+                with open(logf, encoding="utf-8", errors="ignore") as f:
+                    txt = f.read()
+                if "Hooked FrameStageNotify" not in txt:
+                    self.log("Démo : le module de rendu ne s'est pas accroché à CS2 (version de CS2 non prise en charge ?).")
+            except OSError:
+                pass
             self.done_n = self.total
             self.state = "encodage des clips"
             self._encode_all()

@@ -58,10 +58,15 @@ jobs:
 
       - name: Récupérer le module de rendu CS2 (CS Demo Manager, licence MIT)
         run: |
-          git clone --depth 1 https://github.com/akiver/cs-demo-manager ext/csdm
+          # version figée du module (vérifiée) + correctif HexaClip pour CS2 1.41.7.6+ (ticket CSDM n° 1458)
+          git init -q ext/csdm
           cd ext/csdm
+          git remote add origin https://github.com/akiver/cs-demo-manager
+          git fetch -q --depth 1 origin fc2b5bde25991ff299f5bda8acef4db5e70f4482
+          git checkout -q FETCH_HEAD
           git submodule update --init cs2-server-plugin/cs2-server-plugin/deps/hl2sdk cs2-server-plugin/cs2-server-plugin/deps/json cs2-server-plugin/cs2-server-plugin/deps/easywsclient
           git log -1 --format="CS Demo Manager %h (%cs)"
+          python ../../outils/module_cs2/corriger_module.py cs2-server-plugin/cs2-server-plugin/main.cpp
 
       - uses: microsoft/setup-msbuild@v2
 
