@@ -191,3 +191,11 @@ def has_filter(name):
         return bool(re.search(rf"\s{re.escape(name)}\s", r.stdout.decode("utf-8", "ignore")))
     except Exception:
         return False
+
+
+def has_decoder(name):
+    try:
+        r = run([find("ffmpeg"), "-hide_banner", "-decoders"], timeout=20)
+        return bool(re.search(rf"\s{re.escape(name)}\s", r.stdout.decode("utf-8", "ignore")))
+    except Exception:
+        return False

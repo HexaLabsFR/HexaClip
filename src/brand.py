@@ -394,3 +394,19 @@ def static_track(path, total, cuts):
         _static_burst(buf, rate, c, rnd)
     _write_wav(path, buf, rate)
     return path
+
+
+def transition_track(path, total, events):
+    """Piste des sons de transition : events = [(instant, « leger » | « whoosh » | « grésillement »)]."""
+    rate = 48000
+    buf = array("h", bytes(4 * int(rate * total + rate)))
+    rnd = random.Random(17)
+    for at, kind in events:
+        if kind == "grésillement":
+            _static_burst(buf, rate, at, rnd)
+        elif kind == "whoosh":
+            _whoosh(buf, rate, at, rnd, gain=0.5)
+        else:
+            _whoosh(buf, rate, at, rnd, gain=0.22)
+    _write_wav(path, buf, rate)
+    return path

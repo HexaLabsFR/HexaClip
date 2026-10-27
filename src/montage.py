@@ -126,8 +126,8 @@ def build(chosen, out_path, opts):
     chains, labels_v, labels_a = [], [], []
     idx = 0
     clips_total = 0.0
-    trans = bool(opts.get("stinger_file"))
-    cut_marks = []                        # fins de passages (temps dans la suite des clips)
+    trans = bool(opts.get("transitions_cfg"))
+    durations = []
     for m in chosen:
         n_kills = len(m.get("kills_t") or [])
         names = kill_labels(n_kills, m.get("type"))
@@ -150,7 +150,10 @@ def build(chosen, out_path, opts):
             zoom = _pulse_expr(rel) if opts.get("punch", True) else "0"
             v = f"[{i}:v]setpts=PTS-STARTPTS,fps={FPS},scale=1920:1080:force_original_aspect_ratio=decrease," \
                 f"pad=1920:1080:-1:-1,setsar=1"
-            if opts.get("cadrage") == "zoom":
+            if m.get("vertical"):                     # image déjà verticale (aperçu des transitions)
+                v = f"[{i}:v]setpts=PTS-STARTPTS,fps={FPS},scale={W}:{H},setsar=1"
+                y_badge, y_sub = 1330, 1505
+            elif opts.get("cadrage") == "zoom":
                 v += (f",crop=ih*9/16:ih,scale=w='{W}*(1+{zoom})':h=-2:eval=frame,crop={W}:{H}")
                 y_badge, y_sub = int(H * 0.70), int(H * 0.70) + 175
             else:
@@ -190,43 +193,34 @@ def build(chosen, out_path, opts):
             labels_v.append(f"[v{i}]")
             labels_a.append(f"[a{i}]")
             clips_total += d
-            cut_marks.append(clips_total)
+            durations.append(d)
     if not labels_v:
         raise ValueError("aucun passage à monter")
-    n = len(labels_v)
-    chains.append("".join(f"{v}{a}" for v, a in zip(labels_v, labels_a)) + f"concat=n={n}:v=1:a=1[cv][ca]")
 
-    # filigrane : plaque pseudo (ou logo HexaClip) sur tous les clips
-    logo = opts.get("plaque") or opts.get("logo") or paths.res("assets", "filigrane.png")
-    args += ["-loop", "1", "-framerate", str(FPS), "-i", logo]
-    li = idx
-    idx += 1
-    width = "" if opts.get("plaque") else "scale=430:-1,"
-    chains.append(f"[{li}:v]{width}format=rgba,colorchannelmixer=aa=0.95[wm]")
-    chains.append("[cv][wm]overlay=(W-w)/2:150:shortest=1:format=auto[cvw]")
-    seq = []                              # (étiquette vidéo, étiquette son, durée) dans l'ordre
-    total = 0.0
-    cuts = []
-
+    norm = f"fps={FPS},settb=1/{FPS},format=yuv420p,setsar=1"
+    segs = []                                  # (vidéo, son, durée) dans l'ordre
     if opts.get("intro_file"):
         args += ["-i", opts["intro_file"]]
         ii = idx
         idx += 1
-        chains.append(f"[{ii}:v]fps={FPS},scale={W}:{H},setsar=1,format=yuv420p[iv]")
+        chains.append(f"[{ii}:v]scale={W}:{H},{norm}[iv]")
         chains.append(f"[{ii}:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{intro_s:.3f}[ia]")
-        seq.append(("[iv]", "[ia]", intro_s))
-    seq.append(("[cvw]", "[ca]", clips_total))
-
+        segs.append(("[iv]", "[ia]", intro_s))
+    first_clip = len(segs)
+    for k, (lv, la, d) in enumerate(zip(labels_v, labels_a, durations)):
+        chains.append(f"{lv}{norm}[pw{k}]")
+        segs.append((f"[pw{k}]", la, d))
+    last_clip = len(segs) - 1
     fin = opts.get("fin")
     if opts.get("outro_file"):
         args += ["-i", opts["outro_file"]]
         oi = idx
         idx += 1
         od = float(opts.get("outro_s", OUTRO_S))
-        chains.append(f"[{oi}:v]fps={FPS},scale={W}:{H},setsar=1,format=yuv420p[ov]")
+        chains.append(f"[{oi}:v]scale={W}:{H},{norm}[ov]")
         chains.append(f"[{oi}:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{od:.3f}[oa]")
-        seq.append(("[ov]", "[oa]", od))
-    elif fin is not None:                 # ancien écran de fin (texte fixe)
+        segs.append(("[ov]", "[oa]", od))
+    elif fin is not None:                      # ancien écran de fin (texte fixe)
         sym = paths.res("assets", "filigrane.png")
         args += ["-loop", "1", "-framerate", str(FPS), "-t", f"{OUTRO_S}", "-i", sym]
         si = idx
@@ -237,50 +231,106 @@ def build(chosen, out_path, opts):
             o += "," + _text(fin["ligne1"], 92, int(H / 2 + 40), color=f"{MINT}")
         if fin.get("ligne2"):
             o += "," + _text(fin["ligne2"], 54, int(H / 2 + 175), color="white@0.85")
-        o += ",fade=t=in:st=0:d=0.25,format=yuv420p,setsar=1[ov]"
+        o += f",fade=t=in:st=0:d=0.25,{norm}[ov]"
         chains.append(o)
         chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{OUTRO_S}[oa]")
-        seq.append(("[ov]", "[oa]", OUTRO_S))
+        segs.append(("[ov]", "[oa]", OUTRO_S))
 
-    # instants des coupes dans la vidéo finale
-    for k, (_, _, d) in enumerate(seq):
-        if seq[k][0] == "[cvw]":
-            cuts += [total + c for c in cut_marks[:-1]]
-        total += d
-        if k < len(seq) - 1:
-            cuts.append(total)
-    if len(seq) > 1:
-        chains.append("".join(v + a for v, a, _ in seq) + f"concat=n={len(seq)}:v=1:a=1[sv][sa]")
-        last_v, last_a = "[sv]", "[sa]"
-    else:
-        last_v, last_a = "[cvw]", "[ca]"
+    # enchaînement : fondus (xfade, les clips se chevauchent) ou coupes franches (+ habillage par-dessus)
+    import transitions as tr
+    tplan = []
+    if trans and len(segs) > 1:
+        cfg = opts["transitions_cfg"]
+        tplan = tr.plan(len(segs) - 1, cfg["actives"], cfg.get("ouverture") if opts.get("intro_file") else None,
+                        cfg.get("graine"))
+        if opts.get("trans_force"):                 # aperçu de la bibliothèque : ordre imposé
+            tplan = list(opts["trans_force"])[:len(segs) - 1]
+        stingers = opts.get("stingers") or {}
+        tplan = [t if tr.BY_ID[t].famille == "xfade" or tr.BY_ID[t].effet in stingers else "fondu" for t in tplan]
+    cur_v, cur_a, cur_len = segs[0]
+    starts, ends = [0.0], []                   # début / fin de chaque segment dans la vidéo finale
+    events = []                                # (instant, transition) pour les sons et habillages
+    for k, (sv, sa, sd) in enumerate(segs[1:]):
+        tid = tplan[k] if tplan else None
+        t = tr.BY_ID.get(tid) if tid else None
+        if t is not None and t.famille == "xfade":
+            dx = min(t.duree, cur_len / 2, sd / 2)
+            chains.append(f"{cur_v}{sv}xfade=transition={t.effet}:duration={dx:.3f}:offset={cur_len - dx:.3f}[jx{k}]")
+            chains.append(f"{cur_a}{sa}acrossfade=d={dx:.3f}[ja{k}]")
+            events.append((cur_len - dx / 2, t))
+            ends.append(cur_len)
+            starts.append(cur_len - dx)
+            cur_len += sd - dx
+        else:
+            chains.append(f"{cur_v}{cur_a}{sv}{sa}concat=n=2:v=1:a=1[jc{k}][ja{k}];[jc{k}]{norm}[jx{k}]")
+            if t is not None:
+                events.append((cur_len, t))
+            ends.append(cur_len)
+            starts.append(cur_len)
+            cur_len += sd
+        cur_v, cur_a = f"[jx{k}]", f"[ja{k}]"
+    ends.append(cur_len)
+    last_v, last_a = cur_v, cur_a
+    total = cur_len
 
-    # transitions : balayage superposé à chaque coupe + whoosh
-    if trans and cuts:
-        from brand import SIGNAL_FX, static_track, whoosh_track
-        STINGER_CUT = opts.get("stinger_cut") or getattr(th, "STINGER_CUT", 0.23)
-        args += ["-i", opts["stinger_file"]]
-        sti = idx
+    # filigrane (plaque pseudo ou logo) : une seule image, visible pendant les clips seulement
+    logo = opts.get("plaque") or opts.get("logo") or paths.res("assets", "filigrane.png")
+    args += ["-loop", "1", "-framerate", str(FPS), "-i", logo]
+    li = idx
+    idx += 1
+    width = "" if opts.get("plaque") else "scale=430:-1,"
+    w0 = ends[first_clip - 1] if first_clip > 0 else 0.0                          # intro finie
+    w1 = starts[last_clip + 1] if last_clip + 1 < len(starts) else ends[last_clip]   # avant la fin
+    chains.append(f"[{li}:v]{width}format=rgba,colorchannelmixer=aa=0.95[wm]")
+    chains.append(f"{last_v}[wm]overlay=(W-w)/2:150:shortest=1:format=auto:enable='between(t,{w0:.3f},{w1:.3f})'[wmv]")
+    last_v = "[wmv]"
+
+    # habillages superposés aux coupes franches
+    over = [(at, t) for at, t in events if t.famille == "habillage"]
+    stingers = opts.get("stingers") or {}
+    for src in sorted({t.effet for _, t in over}):
+        info = stingers[src]
+        uses = [at for at, t in over if t.effet == src]
+        pre = ["-c:v", "libvpx-vp9"] if info.get("webm_alpha") else []
+        args += pre + ["-i", info["file"]]
+        si = idx
         idx += 1
-        chains.append(f"[{sti}:v]split={len(cuts)}" + "".join(f"[st{k}]" for k in range(len(cuts))))
-        for k, c in enumerate(cuts):
-            chains.append(f"[st{k}]setpts=PTS-STARTPTS+{max(0.0, c - STINGER_CUT):.3f}/TB[sd{k}]")
-            chains.append(f"{last_v}[sd{k}]overlay=eof_action=pass:format=auto[tv{k}]")
-            last_v = f"[tv{k}]"
-        if opts.get("stinger_fx"):
-            # signal perdu : l'image se dédouble en R/V/B et grésille autour de chaque coupe
-            win = "+".join(f"between(t,{max(0.0, c - SIGNAL_FX):.3f},{c + SIGNAL_FX:.3f})" for c in cuts)
-            chains.append(f"{last_v}rgbashift=rh=-22:bh=22:rv=6:bv=-6:edge=smear:enable='{win}',"
-                          f"noise=alls=38:allf=t+u:enable='{win}',eq=contrast=1.18:saturation=1.3:enable='{win}'[fx]")
-            last_v = "[fx]"
+        fit = (f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}," if info.get("fit") else "")
+        chains.append(f"[{si}:v]{fit}format=rgba,fps={FPS},split={len(uses)}" +
+                      "".join(f"[s{src}{j}]" for j in range(len(uses))))
+        for j, at in enumerate(uses):
+            chains.append(f"[s{src}{j}]setpts=PTS-STARTPTS+{max(0.0, at - info['cut']):.3f}/TB[d{src}{j}]")
+            chains.append(f"{last_v}[d{src}{j}]overlay=eof_action=pass:format=auto[o{src}{j}]")
+            last_v = f"[o{src}{j}]"
+        if info.get("audio"):                  # son du fichier de transition (pack)
+            chains.append(f"[{si}:a]aresample=48000,aformat=channel_layouts=stereo,asplit={len(uses)}" +
+                          "".join(f"[sa{src}{j}]" for j in range(len(uses))))
+            for j, at in enumerate(uses):
+                ms = int(max(0.0, at - info["cut"]) * 1000)
+                chains.append(f"[sa{src}{j}]adelay={ms}|{ms},apad,atrim=0:{total:.3f}[sb{src}{j}]")
+            chains.append(f"{last_a}" + "".join(f"[sb{src}{j}]" for j in range(len(uses))) +
+                          f"amix=inputs={len(uses) + 1}:duration=first:normalize=0[am{src}]")
+            last_a = f"[am{src}]"
+    sig = [at for at, t in over if t.effet == "signal"]
+    if sig:
+        from brand import SIGNAL_FX
+        win = "+".join(f"between(t,{max(0.0, c - SIGNAL_FX):.3f},{c + SIGNAL_FX:.3f})" for c in sig)
+        chains.append(f"{last_v}rgbashift=rh=-22:bh=22:rv=6:bv=-6:edge=smear:enable='{win}',"
+                      f"noise=alls=38:allf=t+u:enable='{win}',eq=contrast=1.18:saturation=1.3:enable='{win}'[fx]")
+        last_v = "[fx]"
+    # sons des transitions (whoosh, grésillement…) sur une piste à part
+    sons = [(at, t.son) for at, t in events if t.son in ("leger", "whoosh", "grésillement")]
+    if sons:
+        from brand import transition_track
         wpath = os.path.join(opts.get("whoosh_dir") or os.path.dirname(out_path), ".whoosh_tmp.wav")
-        (static_track if opts.get("transition_sound") == "static" else whoosh_track)(wpath, total, cuts)
+        transition_track(wpath, total, sons)
         args += ["-i", wpath]
         wi = idx
         idx += 1
         chains.append(f"[{wi}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{total:.3f}[wh]")
-        chains.append(f"{last_a}[wh]amix=inputs=2:duration=first:normalize=0[am]")
-        last_a = "[am]"
+        chains.append(f"{last_a}[wh]amix=inputs=2:duration=first:normalize=0[amw]")
+        last_a = "[amw]"
+    opts["_plan"] = [t.id for _, t in events]
 
     # musique (optionnelle) mélangée sous le son du jeu
     if opts.get("musique"):
@@ -328,6 +378,36 @@ def theme_module(style):
     return brand
 
 
+def prepare_transitions(opts, th, work, log=print):
+    """Choisit les transitions de la compil et prépare les animations nécessaires (signal, balayage, pack)."""
+    import random as _r
+    import brand
+    import transitions as tr
+    pack = (opts.get("pack_file") or "").strip()
+    pack_ok = bool(pack) and os.path.isfile(pack)
+    actives = [t for t in (opts.get("trans_actives") or tr.PAR_DEFAUT) if t in tr.BY_ID and (t != "pack" or pack_ok)]
+    ouverture = tr.ouverture_effective(opts.get("trans_ouverture", "auto"), pack_ok)
+    besoin = {tr.BY_ID[t].effet for t in actives + [ouverture] if tr.BY_ID[t].famille == "habillage"}
+    stingers = {}
+    if "signal" in besoin:
+        cols = getattr(th, "SIGNAL_COLORS", None)
+        stingers["signal"] = {"file": brand.render_signal(paths.data(f"transition_signal_{th.__name__}_v2.mov"), cols),
+                              "cut": brand.SIGNAL_CUT}
+    if "balayage" in besoin:
+        stingers["balayage"] = {"file": th.render_stinger(paths.data(f"transition_{th.__name__}_v2.mov")),
+                                "cut": getattr(th, "STINGER_CUT", 0.23)}
+    if "pack" in besoin and pack_ok:
+        info = ff.probe(pack)
+        cut = float(opts.get("pack_cut") or 0) or info["duree"] / 2
+        stingers["pack"] = {"file": pack, "cut": min(cut, max(0.05, info["duree"] - 0.05)), "fit": True,
+                            "audio": info["son"],
+                            "webm_alpha": pack.lower().endswith(".webm") and ff.has_decoder("libvpx-vp9")}
+    opts["stingers"] = stingers
+    opts["whoosh_dir"] = work
+    opts["transitions_cfg"] = {"actives": actives, "ouverture": ouverture,
+                               "graine": opts.get("trans_graine", _r.randrange(1 << 30))}
+
+
 def make(chosen, out_dir, opts, log=print):
     """Monte la compil. Renvoie (chemin, durée). Repli sur libx264 si l'encodeur matériel refuse.
     opts : style (spectre | hexaclip), intro = (titre, sous_titre), pseudo, appel (texte de fin),
@@ -344,26 +424,13 @@ def make(chosen, out_dir, opts, log=print):
     pseudo = (opts.get("pseudo") or "").strip()
     trans = bool(opts.get("transitions", True))
     try:
-        kind = opts.get("transition", "signal")
-        if trans and kind == "signal":
-            import brand
+        if trans:
             try:
-                cols = getattr(th, "SIGNAL_COLORS", None)
-                opts["stinger_file"] = brand.render_signal(paths.data(f"transition_signal_{th.__name__}_v1.mov"), cols)
-                opts["stinger_cut"] = brand.SIGNAL_CUT
-                opts["stinger_fx"] = True
-                opts["transition_sound"] = "static"
-                opts["whoosh_dir"] = work
+                prepare_transitions(opts, th, work, log)
                 tmp.append(os.path.join(work, ".whoosh_tmp.wav"))
             except Exception as e:
                 log(f"Transitions ignorées : {e}")
-        elif trans:
-            try:
-                opts["stinger_file"] = th.render_stinger(paths.data(f"transition_{th.__name__}_v1.mov"))
-                opts["whoosh_dir"] = work
-                tmp.append(os.path.join(work, ".whoosh_tmp.wav"))
-            except Exception as e:
-                log(f"Transitions ignorées : {e}")
+                opts.pop("transitions_cfg", None)
         if pseudo and not opts.get("logo"):
             opts["plaque"] = th.nameplate(pseudo, os.path.join(work, "plaque.png"))
             tmp.append(opts["plaque"])

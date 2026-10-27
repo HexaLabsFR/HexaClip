@@ -38,7 +38,11 @@ DEFAULTS = {
     "compil_style": "spectre",       # spectre (dégradé + viseur, identité du pseudo) ou hexaclip (menthe)
     "compil_intro": True,            # intro animée avec l'accroche (ex. « ACE SUR MIRAGE »)
     "compil_transitions": True,      # transitions entre les passages
-    "compil_transition": "signal",   # signal (télé qui perd le signal) ou balayage (panneau du style)
+    "compil_trans_lib": ["fondu", "flash", "droite", "gauche", "haut", "poussee", "zoom", "flou", "signal",
+                         "balayage"],  # transitions tirées au hasard (bibliothèque, voir transitions.py)
+    "compil_trans_ouverture": "auto",  # après l'intro : auto = pack si fichier, sinon balayage
+    "compil_pack_fichier": "",       # transition du pack Twitch (vidéo .webm/.mov/.mp4, transparence acceptée)
+    "compil_pack_coupe": 0.0,        # seconde de la coupe dans ce fichier (0 = milieu)
     "compil_appel": "Abonne-toi pour la suite",   # texte de l'écran de fin (vide = rien)
     "compil_texte": "",              # texte affiché en haut (vide = rien)
     "compil_logo": "",               # PNG perso (vide = logo HexaClip)

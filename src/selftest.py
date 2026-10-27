@@ -88,6 +88,10 @@ def test_choice():
     it = build_item(spread, [1])
     check("kill partiel", it["kills_t"] == [30] and it["coupes"] == [[26.5, 31.8]] and it["type"] == "partiel",
           str(it["coupes"]))
+    import transitions as tr
+    pl = tr.plan(12, ["fondu", "droite", "zoom", "signal"], "pack", 3)
+    check("bibliothèque de transitions", pl[0] == "pack" and all(a != b for a, b in zip(pl[1:], pl[2:]))
+          and len(set(pl[1:])) >= 3, " ".join(pl))
     import updater
     check("comparaison de versions", updater.newer("0.10.0", "0.9.3") and not updater.newer("0.2.0", "0.2.0")
           and updater.newer("v1.0", "0.9"))

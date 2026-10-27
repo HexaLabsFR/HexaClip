@@ -886,13 +886,13 @@ class App:
             self.vars[key] = (v, ("map", values, labels))
             return lambda p: ttk.Combobox(p, textvariable=v, values=labels, width=width, state="readonly")
 
-        def folder(key, title, file=False):
+        def folder(key, title, file=False, types=(("Image PNG", "*.png"),)):
             v = tk.StringVar(value=self.cfg[key])
             self.vars[key] = (v, str)
 
             def pick():
                 from tkinter import filedialog
-                p = (filedialog.askopenfilename(title=title, filetypes=[("Image PNG", "*.png")]) if file
+                p = (filedialog.askopenfilename(title=title, filetypes=list(types)) if file
                      else filedialog.askdirectory(title=title))
                 if p:
                     v.set(p)
@@ -963,14 +963,13 @@ class App:
         row("Compteur de kills à l'écran", check("compil_badges"))
         row("Intro animée", check("compil_intro"), "logo + pseudo + accroche, 1,7 s")
         row("Transitions entre les kills", check("compil_transitions"))
-        row("Type de transition", combo("compil_transition", ["signal", "balayage"], 26,
-                                        ["Signal TV perdu (glitch)", "Balayage aux couleurs du style"]))
         row("Texte de fin", entry("compil_appel", 30), "ex. Abonne-toi pour la suite (vide = rien)")
         row("Texte en haut (facultatif)", entry("compil_texte", 30), "ex. le nom de ta chaîne")
         row("Logo perso (PNG transparent)", folder("compil_logo", "Logo PNG", file=True))
         self.label(f, "Vide = ton pseudo (ou le logo HexaClip si tu n'as pas mis de pseudo).", 9, "muted").pack(
             anchor="w")
         row("Écran de fin avec l'Elo Faceit", check("compil_fin_faceit"))
+        self._transition_library(f, section, row, combo, entry, folder)
         row("Ajouter une musique", check("musique_on"), "fichiers libres de droits uniquement")
         row("Dossier des musiques", folder("musique_dossier", "Dossier de musiques"))
         row("Volume de la musique", combo("musique_volume", [0.15, 0.25, 0.4, 0.6], 18,
@@ -1000,10 +999,66 @@ class App:
         self.settings_msg.pack(side="left", padx=12)
         return outer
 
+    def _transition_library(self, f, section, row, combo, entry, folder):
+        """Réglages : transitions cochées (tirées au hasard), transition après l'intro, fichier du pack, aperçu."""
+        import transitions as tr
+        tk = self.tk
+        section("Bibliothèque de transitions", "Coche celles que tu aimes : à chaque compil, HexaClip les tire au "
+                                               "hasard, jamais deux fois la même à la suite.")
+        grid = tk.Frame(f, bg=C["bg"])
+        grid.pack(anchor="w", pady=(2, 6))
+        actives = set(self.cfg["compil_trans_lib"])
+        boxes = {}
+        for k, t in enumerate(tr.LIB):
+            bv = tk.BooleanVar(value=t.id in actives)
+            boxes[t.id] = bv
+            tk.Checkbutton(grid, text=t.nom, variable=bv, bg=C["bg"], fg=C["fg"], selectcolor=C["raise"],
+                           activebackground=C["bg"], activeforeground=C["fg"], font=(FONT, 10), anchor="w",
+                           width=30).grid(row=k // 3, column=k % 3, sticky="w", padx=(0, 10), pady=1)
+        self.vars["compil_trans_lib"] = (boxes, "lib")
+        ids = ["auto"] + [t.id for t in tr.LIB]
+        noms = ["Automatique (pack si fichier, sinon balayage)"] + [t.nom for t in tr.LIB]
+        row("Transition après l'intro", combo("compil_trans_ouverture", ids, 40, noms))
+        row("Transition du pack (vidéo)", folder("compil_pack_fichier", "Transition du pack Twitch", file=True,
+                                                 types=(("Vidéo", "*.webm *.mov *.mp4 *.mkv"), ("Tous", "*.*"))))
+        row("Moment de la coupe (s)", entry("compil_pack_coupe", 8),
+            "quand ta transition couvre tout l'écran (0 = au milieu)")
+        r = tk.Frame(f, bg=C["bg"])
+        r.pack(fill="x", pady=4)
+        self.button(r, "Voir un aperçu des transitions cochées", self._preview_transitions).pack(side="left")
+        self.trans_msg = self.label(r, "", 10, "muted")
+        self.trans_msg.pack(side="left", padx=12)
+
+    def _preview_transitions(self):
+        import transitions as tr
+        new = self._read_settings()
+        ids = [t for t in new.get("compil_trans_lib", []) if t in tr.BY_ID]
+        if "pack" in ids and not os.path.isfile(new.get("compil_pack_fichier") or ""):
+            ids.remove("pack")
+        if not ids:
+            self.trans_msg.configure(text="Coche au moins une transition.", fg=C["warn"])
+            return
+        out = os.path.join(self.cfg.sub("compils"), "Apercu_transitions.mp4")
+        self.trans_msg.configure(text=f"Fabrication de l'aperçu ({len(ids)} transitions)…", fg=C["accent"])
+
+        def run():
+            try:
+                tr.catalogue(out, {"style": new.get("compil_style", "spectre"),
+                                   "pack_file": new.get("compil_pack_fichier", ""),
+                                   "pack_cut": new.get("compil_pack_coupe", 0)}, ids)
+                self.call(lambda: (self.trans_msg.configure(text="Aperçu prêt.", fg=C["good"]), open_path(out)))
+            except Exception as e:
+                msg = f"Aperçu impossible : {str(e)[:120]}"
+                self.call(lambda: self.trans_msg.configure(text=msg, fg=C["bad"]))
+        threading.Thread(target=run, daemon=True).start()
+
     def _read_settings(self):
         out = {}
         for key, (var, kind) in self.vars.items():
-            raw = var.get()
+            raw = var.get() if kind != "lib" else None
+            if kind == "lib":
+                out[key] = [tid for tid, bv in var.items() if bv.get()]
+                continue
             if isinstance(kind, tuple) and kind[0] == "map":
                 _, values, labels = kind
                 out[key] = values[labels.index(raw)] if raw in labels else values[0]
@@ -1241,7 +1296,7 @@ def main():
             if args.selftest:
                 import importlib
                 for mod in ("psutil", "pystray", "PIL", "config", "db", "engine", "faceit", "ffmpeg_tools",
-                            "gsi_cs2", "moments", "montage", "recorder", "selftest", "updater", "brand", "intro", "spectre") + \
+                            "gsi_cs2", "moments", "montage", "recorder", "selftest", "updater", "brand", "intro", "spectre", "transitions") + \
                         (("pyaudiowpatch",) if IS_WIN else ()):
                     try:
                         m = importlib.import_module(mod)
