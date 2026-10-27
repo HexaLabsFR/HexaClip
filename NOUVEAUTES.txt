@@ -3,3 +3,5 @@ HexaClip 0.4.0 — clips à partir de tes démos
 - Montage > « Importer une démo » : choisis une démo CS2 (.dem, ou directement le .dem.zst téléchargé sur Faceit). HexaClip l'analyse en quelques secondes : score, joueurs, et chaque round avec ses kills (2K, 3K, 4K, ace, armes, headshots).
 - Choisis le joueur (toi par défaut, ou n'importe quel joueur du match) et les rounds, puis « Clipper ces rounds » : HexaClip ouvre CS2 en mode démo, rejoue chaque passage à la première personne et le filme. Les clips arrivent dans Montage et Clips, prêts pour une compil avec ton habillage.
 - Pendant la lecture : HUD réduit au fil des kills, pas de vision à travers les murs. Laisse CS2 au premier plan.
+- Capture : si l'écran capté se fige (image bloquée) ou prend du retard, HexaClip relance la capture tout seul. Avant : clips à l'image figée et « Clip perdu : passage plus ancien que le tampon ».
+- Anciens clips : contrôlés une fois au lancement. Ceux dont la lecture restait bloquée sur la première image sont réparés ; ceux dont l'image était figée sont écartés des compils (filtre « Images figées » dans Clips pour les supprimer d'un coup).
