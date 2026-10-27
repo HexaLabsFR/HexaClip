@@ -96,6 +96,7 @@ class Engine:
         self.method = None                   # méthode de capture validée sur ce PC
         self.method_error = ""
         self.cs2_running = False
+        self.last_gsi = 0.0                  # dernier message de CS2 (preuve que le jeu tourne)
         self.session_id = None
         self.session_start = None
         self.session_moments = 0
@@ -139,6 +140,7 @@ class Engine:
         if not cfg_installed():
             ok, msg = install_cfg()
             self.emit("info" if ok else "erreur", msg)
+        self.recorder._kill_orphan()
         self.detect_pack()
         self.detect_capture()
         self.cleanup_old()
@@ -207,27 +209,31 @@ class Engine:
         restarts = 0
         last_faceit = 0.0
         while not self._stop.is_set():
-            alive = self._cs2_alive()
-            if alive and not self.cs2_running:
-                self.cs2_running = True
-                self._session_begin()
-            elif not alive and self.cs2_running:
-                self.cs2_running = False
-                self._session_end()
-            # FFmpeg tombé pendant que CS2 tourne : on relance (3 fois max)
-            if self.cs2_running and self.method and self.cfg["capture_auto"] and not self.recorder.running:
-                if restarts < 3:
-                    restarts += 1
-                    log("Capture arrêtée, relance. " + self.recorder.error_tail()[-400:])
-                    self.start_recording()
-            elif self.recorder.running:
-                restarts = 0
-            self.tracker.tick()
-            # relevé Faceit : toutes les 4 min pendant le jeu, toutes les 30 min sinon
-            gap = 240 if self.cs2_running else 1800
-            if self.faceit.configured() and time.time() - last_faceit > gap:
-                last_faceit = time.time()
-                threading.Thread(target=self.refresh_faceit, daemon=True).start()
+            try:
+                # CS2 envoie la partie en direct : s'il parle, il tourne (même si la liste des processus rate)
+                alive = self._cs2_alive() or (time.time() - self.last_gsi < 20)
+                if alive and not self.cs2_running:
+                    self.cs2_running = True
+                    self._session_begin()
+                elif not alive and self.cs2_running:
+                    self.cs2_running = False
+                    self._session_end()
+                # FFmpeg tombé pendant que CS2 tourne : on relance (3 fois max)
+                if self.cs2_running and self.method and self.cfg["capture_auto"] and not self.recorder.running:
+                    if restarts < 3:
+                        restarts += 1
+                        log("Capture arrêtée, relance. " + self.recorder.error_tail()[-400:])
+                        self.start_recording()
+                elif self.recorder.running:
+                    restarts = 0
+                self.tracker.tick()
+                # relevé Faceit : toutes les 4 min pendant le jeu, toutes les 30 min sinon
+                gap = 240 if self.cs2_running else 1800
+                if self.faceit.configured() and time.time() - last_faceit > gap:
+                    last_faceit = time.time()
+                    threading.Thread(target=self.refresh_faceit, daemon=True).start()
+            except Exception:
+                log_error("surveillance de CS2")
             self._stop.wait(2.0)
 
     def _session_begin(self):
@@ -281,6 +287,7 @@ class Engine:
 
     # ------------------------------------------------------------------ actions
     def _on_gsi(self, payload, t):
+        self.last_gsi = time.time()
         self.tracker.min_kills = int(self.cfg["kills_min"])
         self.tracker.feed(payload, t)
 
@@ -481,6 +488,8 @@ class Engine:
             "gsi": self.gsi.alive(),
             "rec": self.recorder.running,
             "son": self.recorder.has_audio,
+            "son_nom": self.recorder.audio_name,
+            "son_silence_s": self.recorder.audio_silent_for(),
             "method": self.method,
             "method_error": self.method_error,
             "busy": self.busy,

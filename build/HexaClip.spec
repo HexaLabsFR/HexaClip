@@ -11,7 +11,7 @@ a = Analysis(
     pathex=[SRC],
     datas=[(os.path.join(SRC, "assets"), "assets")],
     hiddenimports=["paths", "config", "db", "engine", "faceit", "ffmpeg_tools", "gsi_cs2", "moments", "montage",
-                   "recorder", "selftest", "updater", "brand", "intro", "spectre", "transitions", "pystray._win32", "pyaudiowpatch"],
+                   "recorder", "selftest", "updater", "brand", "intro", "spectre", "transitions", "pystray._win32", "pyaudiowpatch", "audioop", "array"],
     excludes=["matplotlib", "scipy", "pandas", "numpy", "IPython", "pytest", "setuptools", "pip", "cairosvg"],
     noarchive=False,
 )

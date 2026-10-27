@@ -10,12 +10,14 @@ réencodage dans un clip MP4 : quasi instantané, aucune perte de qualité.
 """
 from __future__ import annotations
 
+import array
 import collections
 import os
 import shutil
 import sys
 import threading
 import time
+import warnings
 
 import ffmpeg_tools as ff
 
@@ -26,59 +28,203 @@ IS_WIN = sys.platform == "win32"
 # ----------------------------------------------------------------------------
 # Son du PC (WASAPI loopback)
 # ----------------------------------------------------------------------------
-class AudioPump:
-    """Lit le son de la sortie par défaut de Windows et l'écrit en PCM 16 bits dans un flux."""
+OUT_RATE, OUT_CH = 48000, 2          # format envoyé à FFmpeg, fixe même si la sortie son change
+SILENCE_REOPEN_S = 20                # silence total plus long que ça : on vérifie la sortie son par défaut
+SOUND_THRESHOLD = 8                  # crête (sur 32767) au-dessus de laquelle on considère qu'il y a du son
 
-    def __init__(self):
-        self.rate, self.ch = 48000, 2
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    import audioop
+
+
+def to_stereo48(data, ch, rate, state=None):
+    """PCM 16 bits entrelacé (ch voies, rate Hz) → stéréo 48 kHz. Renvoie (octets, état du rééchantillonnage)."""
+    a = array.array("h")
+    a.frombytes(data[:len(data) - len(data) % (2 * max(1, ch))])
+    if ch == 2:
+        b = a.tobytes()
+    else:
+        n = len(a) // max(1, ch)
+        if ch == 1:
+            left = right = a
+        else:
+            # 5.1 / 7.1 (casques « surround ») : avant + centre + arrière/côtés, comme un mixage stéréo classique
+            def voice(i):
+                return a[i:n * ch:ch].tobytes() if i < ch else None
+            fl, fr = voice(0), voice(1)
+            left, right = fl, fr
+            extra_l = [voice(2)] + [voice(i) for i in (4, 6) if i < ch]
+            extra_r = [voice(2)] + [voice(i) for i in (5, 7) if i < ch]
+            for x in extra_l:
+                if x:
+                    left = audioop.add(left, audioop.mul(x, 2, 0.707), 2)
+            for x in extra_r:
+                if x:
+                    right = audioop.add(right, audioop.mul(x, 2, 0.707), 2)
+            left, right = array.array("h", left), array.array("h", right)
+        out = array.array("h", bytes(n * 4))
+        out[0::2] = left[:n]
+        out[1::2] = right[:n]
+        b = out.tobytes()
+    if rate != OUT_RATE and b:
+        b, state = audioop.ratecv(b, 2, 2, int(rate), OUT_RATE, state)
+    return b, state
+
+
+class AudioPump:
+    """Capte le son de la sortie par défaut de Windows (ce que tu entends) et l'envoie à FFmpeg en stéréo 48 kHz.
+
+    - capture par rappel (callback) : rien ne bloque, même quand aucun son ne joue ;
+    - quand Windows n'envoie rien (aucun son), on comble avec du silence pour garder le flux régulier ;
+    - après 20 s de silence total, on vérifie la sortie par défaut (casque allumé ou branché après le
+      lancement, changement de sortie…) et on bascule dessus.
+    """
+
+    def __init__(self, log=print):
+        self.rate, self.ch = OUT_RATE, OUT_CH
         self.ok = False
         self.error = ""
-        self._p = self._stream = None
-        self._stop = threading.Event()
         self.name = ""
+        self.log = log
+        self.dev_rate, self.dev_ch = OUT_RATE, OUT_CH
+        self.last_sound = 0.0
+        self._p = self._stream = None
+        self._q = collections.deque()
+        self._stop = threading.Event()
+        self._opened_at = 0.0
+        self._last_reopen = 0.0
+
+    # --- ouverture / fermeture de la sortie son ----------------------------
+    def _open_device(self):
+        import pyaudiowpatch as pyaudio
+        p = pyaudio.PyAudio()
+        try:
+            try:
+                spk = p.get_default_wasapi_loopback()
+            except Exception:
+                wasapi = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+                out = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
+                spk = out if out.get("isLoopbackDevice") else next(
+                    (lb for lb in p.get_loopback_device_info_generator() if out["name"] in lb["name"]), None)
+            if not spk:
+                raise RuntimeError("aucune sortie son en boucle trouvée")
+            rate = int(spk["defaultSampleRate"])
+            ch = max(1, int(spk["maxInputChannels"]))
+            q = self._q
+
+            def callback(in_data, frame_count, time_info, status):
+                q.append(in_data)
+                return None, pyaudio.paContinue
+
+            st = p.open(format=pyaudio.paInt16, channels=ch, rate=rate, input=True,
+                        input_device_index=spk["index"], frames_per_buffer=max(256, rate // 100),
+                        stream_callback=callback)
+            st.start_stream()
+            return p, st, spk["name"].replace(" [Loopback]", ""), rate, ch
+        except Exception:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+            raise
+
+    def _close_device(self, wait=0.0):
+        """Ferme la sortie son dans un fil à part (PortAudio peut bloquer) ; attend au plus wait secondes."""
+        p, st = self._p, self._stream
+        self._p = self._stream = None
+
+        def close():
+            for fn in (lambda: st.stop_stream(), lambda: st.close(), lambda: p.terminate()):
+                try:
+                    fn()
+                except Exception:
+                    pass
+        if p or st:
+            t = threading.Thread(target=close, daemon=True)
+            t.start()
+            if wait:
+                t.join(wait)
+                return not t.is_alive()
+        return True
 
     def open(self):
         if not IS_WIN:
             self.error = "son PC : Windows uniquement"
             return False
         try:
-            import pyaudiowpatch as pyaudio
-            p = pyaudio.PyAudio()
-            wasapi = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-            spk = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
-            if not spk.get("isLoopbackDevice"):
-                for lb in p.get_loopback_device_info_generator():
-                    if spk["name"] in lb["name"]:
-                        spk = lb
-                        break
-                else:
-                    raise RuntimeError("aucune sortie son en boucle trouvée")
-            self.rate = int(spk["defaultSampleRate"])
-            self.ch = max(1, int(spk["maxInputChannels"]))
-            self._stream = p.open(format=pyaudio.paInt16, channels=self.ch, rate=self.rate, input=True,
-                                  input_device_index=spk["index"], frames_per_buffer=1024)
-            self._p, self.name, self.ok = p, spk["name"], True
-            return True
+            self._p, self._stream, self.name, self.dev_rate, self.dev_ch = self._open_device()
         except Exception as e:
             self.error = f"son PC indisponible ({e})"
             return False
+        self.ok = True
+        self._opened_at = self._last_reopen = time.time()
+        self.log(f"Son : capté sur « {self.name} » ({self.dev_rate} Hz, {self.dev_ch} voies).")
+        return True
 
+    def _reopen(self):
+        """Rebascule sur la sortie son par défaut actuelle (la liste des sorties n'est relue qu'après fermeture)."""
+        self._last_reopen = time.time()
+        old = self.name
+        if not self._close_device(wait=3.0):
+            return
+        self._q.clear()
+        try:
+            self._p, self._stream, self.name, self.dev_rate, self.dev_ch = self._open_device()
+            self._opened_at = time.time()
+            if self.name != old:
+                self.log(f"Son : la sortie Windows a changé, capté maintenant sur « {self.name} ».")
+        except Exception as e:
+            self.log(f"Son : réouverture impossible ({e}), nouvel essai dans {SILENCE_REOPEN_S} s.")
+
+    def silent_for(self):
+        """Secondes depuis le dernier son entendu (depuis l'ouverture si aucun)."""
+        return time.time() - max(self.last_sound, self._opened_at) if self.ok else 0.0
+
+    # --- boucle d'envoi vers FFmpeg ----------------------------------------
     def pump(self, out):
-        """Boucle de copie vers out (stdin de FFmpeg) jusqu'à stop()."""
+        """Copie le son vers out (stdin de FFmpeg) jusqu'à stop()."""
+        t0, sent, state = time.monotonic(), 0, None
         try:
             while not self._stop.is_set():
-                data = self._stream.read(1024, exception_on_overflow=False)
-                out.write(data)
+                wrote = False
+                while self._q:
+                    data = self._q.popleft()
+                    b, state = to_stereo48(data, self.dev_ch, self.dev_rate, state)
+                    if not b:
+                        continue
+                    if audioop.max(b, 2) > SOUND_THRESHOLD:
+                        self.last_sound = time.time()
+                    out.write(b)
+                    sent += len(b) // 4
+                    wrote = True
+                # aucun son joué = Windows n'envoie rien : on comble avec du silence
+                due = int((time.monotonic() - t0) * OUT_RATE) - sent
+                if due > OUT_RATE // 12:
+                    n = due - OUT_RATE // 50
+                    out.write(bytes(n * 4))
+                    sent += n
+                    wrote = True
+                elif due < -OUT_RATE:          # en avance de plus d'1 s (paquets en rafale) : on recale
+                    t0 = time.monotonic() - sent / OUT_RATE
+                if wrote:
+                    out.flush()
+                # silence prolongé ou sortie disparue : vérifier la sortie par défaut
+                now = time.time()
+                dead = False
+                try:
+                    dead = self._stream is None or not self._stream.is_active()
+                except Exception:
+                    dead = True
+                if now - self._last_reopen > SILENCE_REOPEN_S and (dead or self.silent_for() > SILENCE_REOPEN_S):
+                    self._reopen()
+                    state = None
+                time.sleep(0.01)
         except Exception:
             pass
 
     def stop(self):
         self._stop.set()
-        for fn in (lambda: self._stream.stop_stream(), lambda: self._stream.close(), lambda: self._p.terminate()):
-            try:
-                fn()
-            except Exception:
-                pass
+        self._close_device()
 
 
 # ----------------------------------------------------------------------------
@@ -167,6 +313,7 @@ class Recorder:
     def start(self, method, audio=True, audio_offset_ms=0, test_inputs=None):
         """method = {"source", "encodeur", "fps"} ; test_inputs = arguments d'entrée de remplacement (tests)."""
         self.stop()
+        self._kill_orphan()
         shutil.rmtree(self.buf_dir, ignore_errors=True)
         os.makedirs(self.buf_dir, exist_ok=True)
         self.method = method
@@ -188,7 +335,7 @@ class Recorder:
         else:
             args += video_input_args(src, fps, method.get("ecran", 0))
             if audio:
-                pump = AudioPump()
+                pump = AudioPump(log=self.log)
                 if pump.open():
                     self.audio = pump
                     if audio_offset_ms:
@@ -219,24 +366,55 @@ class Recorder:
         return True
 
     def stop(self, wait_pending=8.0):
+        """Arrête la capture sans jamais rester bloqué (le son et FFmpeg sont coupés indépendamment)."""
         t_end = time.time() + wait_pending
         while self.pending and time.time() < t_end:
             time.sleep(0.2)
-        if self.audio:
-            self.audio.stop()
-            self.audio = None
         p, self.proc = self.proc, None
+        audio, self.audio = self.audio, None
+        if audio:
+            audio.stop()                       # non bloquant
         if p and p.poll() is None:
+            def close_stdin():
+                try:
+                    if p.stdin:
+                        p.stdin.close()
+                except Exception:
+                    pass
+            threading.Thread(target=close_stdin, daemon=True).start()
             try:
-                if p.stdin:
-                    p.stdin.close()
-            except Exception:
-                pass
-            p.terminate()
-            try:
+                p.terminate()
                 p.wait(5)
             except Exception:
-                p.kill()
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+
+    # --- FFmpeg resté seul (HexaClip fermé brutalement, ancienne version figée…) ---
+    def _kill_orphan(self):
+        """Arrête un FFmpeg d'une capture précédente qui écrirait encore dans ce tampon."""
+        target = os.path.normcase(os.path.abspath(os.path.join(self.buf_dir, "seg%03d.ts")))
+        try:
+            import psutil
+            for pr in psutil.process_iter(["name", "cmdline"]):
+                if "ffmpeg" not in (pr.info.get("name") or "").lower():
+                    continue
+                args = pr.info.get("cmdline") or []
+                if any(os.path.normcase(os.path.abspath(x)) == target for x in args if x.endswith(".ts")):
+                    pr.kill()
+                    self.log(f"Ancienne capture FFmpeg arrêtée (processus {pr.pid}).")
+        except Exception:
+            pass
+
+    @property
+    def audio_name(self):
+        a = self.audio
+        return a.name if a else ""
+
+    def audio_silent_for(self):
+        a = self.audio
+        return a.silent_for() if a else 0.0
 
     @property
     def running(self):

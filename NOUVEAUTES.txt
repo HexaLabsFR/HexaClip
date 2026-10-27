@@ -1,10 +1,7 @@
-HexaClip 0.3.0 — tes compils à ton image
+HexaClip 0.3.1 — correctif du son et de la capture
 
-- Ton pseudo partout : intro animée, plaque en haut des clips, écran de fin (Réglages > Ton pseudo)
-- Style « Spectre » (dégradé rose/violet/bleu, viseur rouge, police Audiowide) ou style HexaClip
-- Intro : le viseur se verrouille sur ton logo, puis l'accroche de la vidéo (ex. « ACE SUR MIRAGE »)
-- Transition de ton pack Twitch avant le 1er clip, avec son son ; HexaClip la retrouve tout seul
-  (Bureau, Téléchargements…) et lit le point de coupe dans le LISEZ-MOI
-- Bibliothèque de 18 transitions tirées au hasard (fondus, décalages, zoom, flou, signal TV perdu…),
-  à cocher dans Réglages, avec un aperçu vidéo
-- Coup de zoom sur chaque kill, écran de fin avec l'Elo qui défile, « Abonne-toi » et « HexaClip by Hexa Labs »
+- Son du jeu : HexaClip suit maintenant ta sortie son Windows. Si tu allumes ou branches ton casque après le lancement, ou si tu changes de sortie, il bascule dessus tout seul (avant : vidéo silencieuse).
+- Casques 5.1 / 7.1 « surround » : le son est remixé correctement en stéréo (voix et bruits du centre compris).
+- Accueil : la carte « Son du PC » affiche la sortie écoutée et prévient si rien n'est entendu.
+- Capture : HexaClip ne peut plus se figer quand CS2 se ferme. Avant, il arrivait qu'il n'enregistre plus aucune action ensuite alors que FFmpeg continuait à filmer l'écran en fond.
+- Un FFmpeg resté seul d'une ancienne capture est arrêté automatiquement.

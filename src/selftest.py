@@ -4,7 +4,7 @@ Vérification de HexaClip sans jeu ni écran : `HexaClip.exe --selftest --out ra
 
 1. Détection des kills : une fausse partie CS2 (messages GSI) avec un 3k, un 2k, une mort, un changement de map.
 2. Choix des kills (sélection auto, kills partiels) et mise à jour (comparaison de versions).
-3. Faceit : lecture de réponses d'API types.
+3. Son : conversion 5.1 → stéréo 48 kHz et flux continu sans son. Faceit : réponses d'API types.
 4. Si FFmpeg est là : faux écran (mire + son) enregistré en continu ; round simulé avec un kill puis deux
    autres 13 s plus tard → un seul clip qui recolle les deux passages → compil avec les kills choisis
    puis compil automatique, 1080×1920 contrôlées.
@@ -97,6 +97,38 @@ def test_choice():
           and updater.newer("v1.0", "0.9"))
 
 
+def test_audio():
+    """Conversion du son (casque 7.1 en 44,1 kHz → stéréo 48 kHz) et envoi régulier même sans son."""
+    import array as _array
+    import io
+    import math
+    import recorder as rec
+    frames = 4410                                  # 0,1 s à 44,1 kHz, 6 voies (5.1), son seulement au centre
+    a = _array.array("h", [0] * frames * 6)
+    for i in range(frames):
+        a[i * 6 + 2] = int(8000 * math.sin(i / 10))
+    b, _ = rec.to_stereo48(a.tobytes(), 6, 44100)
+    st = _array.array("h")
+    st.frombytes(b)
+    n = len(st) // 2
+    check("son 5.1 → stéréo 48 kHz", 4700 <= n <= 4900 and max(st[0::2]) > 3000 and max(st[1::2]) > 3000,
+          f"{n} échantillons, crête {max(st)}")
+    p = rec.AudioPump(log=lambda *_: None)
+    p.ok, p.dev_ch, p.dev_rate = True, 6, 44100
+    p._opened_at = p._last_reopen = time.time()
+    for _ in range(3):
+        p._q.append(a.tobytes())                 # 0,3 s de son, puis plus rien (aucun son joué)
+    out = io.BytesIO()
+    import threading
+    th = threading.Thread(target=p.pump, args=(out,), daemon=True)
+    th.start()
+    time.sleep(1.0)
+    p._stop.set()
+    th.join(2)
+    secs = len(out.getvalue()) / 4 / 48000
+    check("son continu même dans le silence", 0.85 < secs < 1.2 and p.last_sound > 0, f"{secs:.2f} s envoyées")
+
+
 def test_faceit():
     from faceit import outro_lines, parse_history_item, parse_match_stats
     pid = "abc"
@@ -184,7 +216,7 @@ def test_pipeline(tmp):
 def run():
     tmp = tempfile.mkdtemp(prefix="hexaclip_test_")
     try:
-        for fn in (test_tracker, test_choice, test_faceit):
+        for fn in (test_tracker, test_choice, test_audio, test_faceit):
             try:
                 fn()
             except Exception:

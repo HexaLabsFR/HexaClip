@@ -19,7 +19,7 @@ import webbrowser
 import paths
 from gsi_cs2 import pretty_map
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 APP, BRAND = paths.APP, paths.BRAND
 IS_WIN = sys.platform == "win32"
 
@@ -310,9 +310,14 @@ class App:
             self._set_stat("rec", "Indisponible", s["method_error"] or "Test de la capture…", "bad"
                            if s["method_error"] else "warn")
         if s["rec"]:
-            self._set_stat("son", "Capté" if s["son"] else "Muet",
-                           "Ce que tu entends dans le casque" if s["son"] else "Vidéo sans son (voir journal)",
-                           "good" if s["son"] else "warn")
+            nom = s.get("son_nom") or "sortie par défaut"
+            if not s["son"]:
+                self._set_stat("son", "Muet", "Vidéo sans son (voir journal)", "warn")
+            elif s.get("son_silence_s", 0) > 90:
+                self._set_stat("son", "Silence", f"Rien entendu sur « {nom} » depuis "
+                               f"{int(s['son_silence_s'] // 60)} min : vérifie ta sortie son Windows", "warn")
+            else:
+                self._set_stat("son", "Capté", nom, "good")
         else:
             self._set_stat("son", "Activé" if self.cfg["son"] else "Coupé", "Sortie son par défaut de Windows",
                            "fg" if self.cfg["son"] else "muted")
