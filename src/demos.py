@@ -278,6 +278,15 @@ class DemoClipper:
         self.state = "préparation"
         self.done_n = 0
         self.total = sum(len(segments(r["kills"], info.get("tickrate"), 0, 0)) for r in rounds)
+        # avancement : étapes de départ (fixes) puis temps de lecture des passages
+        tr = float(info.get("tickrate") or 64)
+        pre, post = float(engine.cfg["avant_s"]), float(engine.cfg["apres_s"])
+        self.play_total = sum((b - a) / tr + SETTLE_S for r in rounds
+                              for a, b, _ in segments(r["kills"], tr, pre, post)) or 1.0
+        self.play_done = 0.0
+        self._seg_start = None
+        self._seg_len = 0.0
+        self._t_start = time.time()
         self.error = ""
         self._gsi_kills = []          # heures murales des kills vus par la liaison CS2 pendant la lecture
         self._last_rk = None
@@ -298,6 +307,24 @@ class DemoClipper:
             if self._last_rk is not None and rk > self._last_rk:
                 self._gsi_kills.extend([t] * (rk - self._last_rk))
             self._last_rk = rk
+
+    # --- avancement (barre de chargement) ----------------------------------
+    STEPS = {"préparation": 0.0, "préparation de la démo": 0.01, "lancement de CS2": 0.03,
+             "chargement de la démo": 0.08}
+    PLAY_FROM = 0.12
+
+    def progress(self):
+        """(fraction 0..1, secondes restantes estimées ou None)."""
+        if self.state == "terminé":
+            return 1.0, 0
+        if self.state in self.STEPS:
+            return self.STEPS[self.state], None
+        cur = 0.0
+        if self._seg_start is not None:
+            cur = min(self._seg_len, time.time() - self._seg_start)
+        done = min(self.play_total, self.play_done + cur)
+        frac = self.PLAY_FROM + (1 - self.PLAY_FROM) * done / self.play_total
+        return min(0.99, frac), max(0, int(self.play_total - done))
 
     # --- déroulé -----------------------------------------------------------
     def cancel(self):
@@ -359,6 +386,8 @@ class DemoClipper:
                 for a, b, ks in segments(r["kills"], tr, pre, post):
                     self._check()
                     self.state = f"round {r['round']} ({self.done_n + 1}/{self.total})"
+                    self._seg_len = (b - a) / tr + SETTLE_S
+                    self._seg_start = time.time()
                     self.nc.send("demo_pause")
                     self.nc.send(f"demo_gototick {a}")
                     self.nc.send("demo_pause")
@@ -378,6 +407,8 @@ class DemoClipper:
                     ok = len(seen) == len(ks) and all(abs(x - y) < 1.5 for x, y in zip(seen, calc))
                     times += seen if ok else calc
                     self.done_n += 1
+                    self.play_done += self._seg_len
+                    self._seg_start = None
                 self._clip(r, r["kills"], times)      # un clip par round, comme en direct
             self.state = "terminé"
             self.nc.send("cl_draw_only_deathnotices 0")

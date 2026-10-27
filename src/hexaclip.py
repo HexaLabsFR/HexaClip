@@ -87,6 +87,14 @@ class Tray:
         except Exception as e:
             app.engine.emit("info", f"Icône de notification indisponible ({e})")
 
+    def set_title(self, text):
+        if self.icon and getattr(self, "_title", None) != text:
+            self._title = text
+            try:
+                self.icon.title = text
+            except Exception:
+                pass
+
     def notify(self, text, title="HexaClip"):
         if self.icon:
             try:
@@ -138,6 +146,7 @@ class DemoDialog:
                 ("armes", "Armes", 260, "w"), ("hs", "HS", 50, "center")]
         box, self.tv = app._tree(w, cols, heights=12)
         box.pack(fill="both", expand=True, pady=(6, 0), **pad)
+        self._box = box
         self.tv.column("armes", stretch=True)
         self.tv.tag_configure("coche", foreground=C["accent"])
         self.tv.bind("<Button-1>", self._click, add="+")
@@ -147,9 +156,16 @@ class DemoDialog:
         self.note = app.label(w, "CS2 va s'ouvrir en mode démo (ferme-le avant s'il est déjà lancé). Laisse le jeu "
                                  "au premier plan et ne touche à rien pendant la lecture : HexaClip filme chaque "
                                  "round coché.", 9, "muted", wraplength=700, justify="left")
-        self.note.pack(anchor="w", pady=(10, 0), **pad)
+        self.note.pack(side="bottom", anchor="w", pady=(10, 0), before=box, **pad)
+        self.prog_box = tk.Frame(w, bg=C["bg"])
+        self.prog = ttk.Progressbar(self.prog_box, style="Hexa.Horizontal.TProgressbar", orient="horizontal",
+                                    mode="determinate", maximum=1000)
+        self.prog.pack(fill="x")
+        self.prog_lbl = app.label(self.prog_box, "", 9, "muted")
+        self.prog_lbl.pack(anchor="w", pady=(4, 0))
         foot = tk.Frame(w, bg=C["bg"])
-        foot.pack(fill="x", pady=14, **pad)
+        foot.pack(side="bottom", fill="x", pady=14, before=self.note, **pad)
+        self._pad = pad
         self.est = app.label(foot, "", 11, "fg", True)
         self.est.pack(side="left")
         self.go = app.button(foot, "Clipper ces rounds", self._start, primary=True)
@@ -268,6 +284,8 @@ class DemoDialog:
         self.go.pack_forget()
         self.stop_btn.pack(side="right")
         self.pcombo.configure(state="disabled")
+        self.prog.configure(value=0)
+        self.prog_box.pack(side="bottom", fill="x", pady=(10, 0), after=self.note, **self._pad)
         self._watch(d)
 
     def _watch(self, d):
@@ -277,6 +295,9 @@ class DemoDialog:
             self.stop_btn.pack_forget()
             self.go.pack(side="right")
             self.pcombo.configure(state="readonly")
+            frac, _ = d.progress()
+            self.prog.configure(value=int(frac * 1000))
+            self.prog_lbl.configure(text="")
             if d.state == "terminé":
                 self.est.configure(text=f"Terminé : {d.done_n} passage{'s' if d.done_n > 1 else ''} filmé"
                                         f"{'s' if d.done_n > 1 else ''}. Les clips sont dans Montage.", fg=C["accent"])
@@ -287,8 +308,13 @@ class DemoDialog:
                     self.extra.pack(side="right", padx=8)
             self.app.refresh_montage(keep_period=False) if self.app.current == "Montage" else None
             return
+        frac, left = d.progress()
+        self.prog.configure(value=int(frac * 1000))
         self.est.configure(text=f"Démo : {d.state}…", fg=C["accent"])
-        self.win.after(500, lambda: self._watch(d))
+        reste = "" if left is None else (" · encore ~" + (f"{left // 60} min {left % 60:02d} s" if left >= 60
+                                                           else f"{left} s"))
+        self.prog_lbl.configure(text=f"{int(frac * 100)} %{reste} · ne touche pas au PC pendant la lecture")
+        self.win.after(400, lambda: self._watch(d))
 
     def _stop(self):
         d = self.app.engine.demo
@@ -370,6 +396,8 @@ class App:
         st.map("TCombobox", fieldbackground=[("readonly", C["raise"])], foreground=[("readonly", C["fg"])])
         self.root.option_add("*TCombobox*Listbox.background", C["raise"])
         self.root.option_add("*TCombobox*Listbox.foreground", C["fg"])
+        st.configure("Hexa.Horizontal.TProgressbar", troughcolor=C["raise"], background=C["accent"],
+                     bordercolor=C["line"], lightcolor=C["accent"], darkcolor=C["accent_d"], thickness=14)
         st.configure("Vertical.TScrollbar", background=C["raise"], troughcolor=C["panel"], bordercolor=C["panel"],
                      arrowcolor=C["muted"])
 
@@ -543,7 +571,12 @@ class App:
             self.session_sub.configure(text="Lance CS2 : HexaClip enregistre tout seul et garde tes 3k, 4k et aces.")
         self.busy_lbl.configure(text=s["busy"])
         rec = "● REC" if s["rec"] else ("CS2 lancé" if s["cs2"] else "En veille")
-        self.pill.configure(text=rec, fg=C["bad"] if s["rec"] else C["muted"])
+        d = self.engine.demo
+        if d is not None and d.state not in ("terminé", "erreur", "arrêté"):
+            frac, _ = d.progress()
+            rec = f"● Démo {int(frac * 100)} %"
+        self.pill.configure(text=rec, fg=C["bad"] if s["rec"] or rec.startswith("● Démo") else C["muted"])
+        self.tray.set_title(f"HexaClip · {rec.lstrip('● ')}")
 
     def _add_event(self, kind, text):
         self.events_log.insert(0, (time.time(), kind, text))

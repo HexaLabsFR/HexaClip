@@ -199,6 +199,7 @@ def test_demo(e, tmp):
     check("démo : CS2 piloté (playdemo, saut, caméra sur le joueur)", d.state == "terminé"
           and 'playdemo "' in cmds and "demo_gototick" in cmds and "spec_lock_to_accountid 109381781" in cmds
           and "demo_resume" in cmds, f"{d.state} {d.error} ; {len(got)} commandes en {time.time() - t0:.0f} s")
+    check("démo : barre de chargement à 100 % à la fin", d.progress()[0] == 1.0 and d.play_done > 0, str(d.progress()))
     ok = len(new) == 1 and os.path.isfile(new[0]["fichier"]) and new[0]["type"] == "2k" and new[0]["round"] == 7
     check("démo : round clippé comme en direct", ok, new[0]["fichier"] if new else "aucun clip")
     for m in new:
