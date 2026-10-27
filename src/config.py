@@ -43,6 +43,7 @@ DEFAULTS = {
     "compil_trans_ouverture": "auto",  # après l'intro : auto = pack si fichier, sinon balayage
     "compil_pack_fichier": "",       # transition du pack Twitch (vidéo .webm/.mov/.mp4, transparence acceptée)
     "compil_pack_coupe": 0.0,        # seconde de la coupe dans ce fichier (0 = milieu)
+    "compil_pack_cadrage": "plein",  # plein (remplit l'écran vertical) ou logo (moins de zoom, bords prolongés)
     "compil_appel": "Abonne-toi pour la suite",   # texte de l'écran de fin (vide = rien)
     "compil_texte": "",              # texte affiché en haut (vide = rien)
     "compil_logo": "",               # PNG perso (vide = logo HexaClip)

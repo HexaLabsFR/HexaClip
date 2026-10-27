@@ -420,8 +420,9 @@ def prepare_transitions(opts, th, work, log=print):
         info = ff.probe(pack)
         cut = float(opts.get("pack_cut") or 0) or info["duree"] / 2
         wide = info["w"] and info["h"] and info["w"] / info["h"] > 1.2
+        logo_entier = wide and opts.get("pack_cadrage") == "logo"
         stingers["pack"] = {"file": pack, "cut": min(cut, max(0.05, info["duree"] - 0.05)),
-                            "fit": "large" if wide else True,
+                            "fit": "large" if logo_entier else True,
                             "audio": info["son"],
                             "webm_alpha": pack.lower().endswith(".webm") and ff.has_decoder("libvpx-vp9")}
     opts["stingers"] = stingers

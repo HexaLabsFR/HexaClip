@@ -1023,6 +1023,9 @@ class App:
                                                  types=(("Vidéo", "*.webm *.mov *.mp4 *.mkv"), ("Tous", "*.*"))))
         row("Moment de la coupe (s)", entry("compil_pack_coupe", 8),
             "quand ta transition couvre tout l'écran (0 = au milieu)")
+        row("Cadrage de la transition du pack", combo("compil_pack_cadrage", ["plein", "logo"], 34,
+                                                       ["Plein écran (recommandé)",
+                                                        "Logo entier (moins de zoom, bords prolongés)"]))
         r = tk.Frame(f, bg=C["bg"])
         r.pack(fill="x", pady=4)
         self.button(r, "Voir un aperçu des transitions cochées", self._preview_transitions).pack(side="left")

@@ -415,6 +415,7 @@ class Engine:
                 "style": self.cfg["compil_style"], "trans_actives": list(self.cfg["compil_trans_lib"]),
                 "trans_ouverture": self.cfg["compil_trans_ouverture"], "pack_file": self.cfg["compil_pack_fichier"],
                 "pack_cut": float(self.cfg["compil_pack_coupe"] or 0),
+                "pack_cadrage": self.cfg["compil_pack_cadrage"],
                 "appel": self.cfg["compil_appel"].strip(),
                 "musique": montage.pick_music(self.cfg["musique_dossier"]) if self.cfg["musique_on"] else None,
                 "musique_volume": float(self.cfg["musique_volume"]),
