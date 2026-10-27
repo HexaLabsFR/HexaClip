@@ -106,10 +106,18 @@ def _text(label, size, y, color="white", box=None, enable=None, alpha=None, x="(
     return s
 
 
-def _pulse_expr(kills_rel, amp=0.055, dur=0.2):
+def _pulse_expr(kills_rel, amp=0.055, dur=0.2, var="t"):
     """Expression FFmpeg du « coup de zoom » sur chaque kill (0 hors des kills)."""
-    terms = [f"if(between(t,{k:.3f},{k + dur:.3f}),sin(PI*(t-{k:.3f})/{dur}),0)" for k in kills_rel]
+    terms = [f"if(between({var},{k:.3f},{k + dur:.3f}),sin(PI*({var}-{k:.3f})/{dur}),0)" for k in kills_rel]
     return f"{amp}*(" + "+".join(terms) + ")" if terms else "0"
+
+
+def _punch(kills_rel, w, h):
+    """Coup de zoom à taille constante (zoompan) : compatible avec toutes les versions de FFmpeg."""
+    if not kills_rel:
+        return ""
+    z = _pulse_expr(kills_rel, var="it")
+    return (f",zoompan=z='1+{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}:fps={FPS}")
 
 
 def build(chosen, out_path, opts):
@@ -146,21 +154,21 @@ def build(chosen, out_path, opts):
             args += ["-ss", f"{a:.3f}", "-t", f"{d:.3f}", "-i", m["fichier"]]
             i = idx
             idx += 1
-            rel = [k - a for k in kills if a - 0.05 <= k <= b + 0.05]
-            zoom = _pulse_expr(rel) if opts.get("punch", True) else "0"
+            rel = [k - a for k in kills if a - 0.05 <= k <= b + 0.05] if opts.get("punch", True) else []
+            fg_h = int(round(W / 1.4 / 2)) * 2
             v = f"[{i}:v]setpts=PTS-STARTPTS,fps={FPS},scale=1920:1080:force_original_aspect_ratio=decrease," \
                 f"pad=1920:1080:-1:-1,setsar=1"
             if m.get("vertical"):                     # image déjà verticale (aperçu des transitions)
                 v = f"[{i}:v]setpts=PTS-STARTPTS,fps={FPS},scale={W}:{H},setsar=1"
                 y_badge, y_sub = 1330, 1505
             elif opts.get("cadrage") == "zoom":
-                v += (f",crop=ih*9/16:ih,scale=w='{W}*(1+{zoom})':h=-2:eval=frame,crop={W}:{H}")
+                v += f",crop=ih*9/16:ih,scale={W}:{H}" + _punch(rel, W, H)
                 y_badge, y_sub = int(H * 0.70), int(H * 0.70) + 175
             else:
                 v += (f",split=2[bg{i}][fg{i}];[bg{i}]scale={W}:{H}:force_original_aspect_ratio=increase,"
                       f"crop={W}:{H},gblur=sigma=28,eq=brightness=-0.14:saturation=1.15[bb{i}];"
-                      f"[fg{i}]crop=ih*1.4:ih,scale={W}:-2,scale=w='{W}*(1+{zoom})':h=-2:eval=frame,"
-                      f"crop={W}:{int(W / 1.4) // 2 * 2}[ff{i}];[bb{i}][ff{i}]overlay=(W-w)/2:(H-h)/2-90")
+                      f"[fg{i}]crop=ih*1.4:ih,scale={W}:{fg_h}" + _punch(rel, W, fg_h) +
+                      f"[ff{i}];[bb{i}][ff{i}]overlay=(W-w)/2:(H-h)/2-90")
                 y_badge, y_sub = 1330, 1505
             # compteur de kills : chaque palier s'affiche du kill jusqu'au suivant (ou la fin du passage)
             if opts.get("badges", True):
