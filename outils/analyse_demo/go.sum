@@ -1,0 +1,4 @@
+github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
+github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
+github.com/markus-wa/demoinfocs-golang/v4 v4.5.1 h1:uNROdqY22kE3c49qh0UFMKlM1ujQbnPOjTyYoWoBNXY=
+github.com/markus-wa/demoinfocs-golang/v4 v4.5.1/go.mod h1:SfgbMznZREy98M7EjzkIPxEpZPVpbX/f9tVGSTJF3WU=

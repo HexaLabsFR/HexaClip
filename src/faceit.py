@@ -65,6 +65,7 @@ class Faceit:
             "niveau": _int(g.get("skill_level")),
             "region": g.get("region", ""),
             "pays": d.get("country", ""),
+            "steamid": str(d.get("steam_id_64") or g.get("game_player_id") or ""),
         }
         if self.profile["elo"] is None:
             raise FaceitError("Ce compte Faceit n'a pas encore d'Elo CS2.")

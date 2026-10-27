@@ -43,6 +43,19 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
+
+      - name: Fabriquer l'outil d'analyse des démos
+        working-directory: outils/analyse_demo
+        run: |
+          go mod tidy
+          mkdir -p ../../src/bin
+          go build -trimpath -ldflags "-s -w" -o ../../src/bin/analyse_demo.exe .
+          ls -la ../../src/bin
+
       - name: Installer les modules
         run: |
           python -m pip install --upgrade pip
@@ -78,7 +91,7 @@ jobs:
           if ($p.ExitCode -ne 0) { Write-Error "Code de sortie $($p.ExitCode)"; exit 1 }
           $t = Get-Content selftest.txt -Raw -Encoding utf8
           if ($t -match "ERREUR|MANQUANTE") { Write-Error "Vérification en échec"; exit 1 }
-          if ($t -notmatch "compil TikTok automatique : OK" -or $t -notmatch "compil avec les kills choisis : OK") { Write-Error "La compil de test n'a pas été montée"; exit 1 }
+          if ($t -notmatch "compil TikTok automatique : OK" -or $t -notmatch "compil avec les kills choisis : OK" -or $t -notmatch "démo : round clippé comme en direct : OK") { Write-Error "La compil de test n'a pas été montée"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:

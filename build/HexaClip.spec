@@ -9,9 +9,10 @@ SRC = os.path.join(ROOT, "src")
 a = Analysis(
     [os.path.join(SRC, "hexaclip.py")],
     pathex=[SRC],
-    datas=[(os.path.join(SRC, "assets"), "assets")],
+    datas=[(os.path.join(SRC, "assets"), "assets")]
+          + ([(os.path.join(SRC, "bin"), "bin")] if os.path.isdir(os.path.join(SRC, "bin")) else []),
     hiddenimports=["paths", "config", "db", "engine", "faceit", "ffmpeg_tools", "gsi_cs2", "moments", "montage",
-                   "recorder", "selftest", "updater", "brand", "intro", "spectre", "transitions", "apercu", "pystray._win32", "pyaudiowpatch", "audioop", "array"],
+                   "recorder", "selftest", "updater", "brand", "intro", "spectre", "transitions", "apercu", "demos", "pystray._win32", "pyaudiowpatch", "audioop", "array"],
     excludes=["matplotlib", "scipy", "pandas", "numpy", "IPython", "pytest", "setuptools", "pip", "cairosvg"],
     noarchive=False,
 )

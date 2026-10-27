@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import threading
 import time
 import traceback
 
@@ -129,6 +130,82 @@ def test_audio():
     check("son continu même dans le silence", 0.85 < secs < 1.2 and p.last_sound > 0, f"{secs:.2f} s envoyées")
 
 
+def test_demo_logic():
+    """Démos : rounds d'un joueur, découpage des passages, outil d'analyse livré."""
+    import demos
+    me, other = "76561198069647509", "76561190000000009"
+    info = {"tickrate": 64, "kills": [
+        {"tick": 1000, "round": 3, "tueur": me, "victime": other, "arme": "AK-47", "hs": True},
+        {"tick": 1100, "round": 3, "tueur": me, "victime": other, "arme": "AK-47", "hs": False},
+        {"tick": 3000, "round": 3, "tueur": me, "victime": other, "arme": "Deagle", "hs": True},
+        {"tick": 5000, "round": 4, "tueur": other, "victime": me, "arme": "AWP", "hs": False},
+        {"tick": 6000, "round": 5, "tueur": me, "victime": me, "arme": "HE", "hs": False}]}
+    rs = demos.player_rounds(info, me)
+    check("démo : kills d'un joueur par round", len(rs) == 1 and rs[0]["type"] == "3k" and rs[0]["hs"] == 2
+          and rs[0]["armes"] == ["AK-47", "Deagle"], str([(r["round"], r["type"]) for r in rs]))
+    sg = demos.segments(rs[0]["kills"], 64, 3.5, 1.8)
+    check("démo : passages à lire (saut si les kills sont loin)", len(sg) == 2 and len(sg[0][2]) == 2
+          and sg[0][0] == 1000 - int(5.0 * 64), str([(a, b, len(k)) for a, b, k in sg]))
+    tool = demos.tool_path()
+    import ffmpeg_tools as ff
+    ok = bool(tool) and ff.run([tool], timeout=30).returncode == 2
+    check("démo : outil d'analyse livré", ok, tool or "absent")
+
+
+def test_demo(e, tmp):
+    """Lecture d'une démo pilotée par une fausse console CS2 : commandes envoyées et round clippé."""
+    import socket
+    import demos
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    got = []
+
+    def serve():
+        c, _ = srv.accept()
+        buf = b""
+        while True:
+            d = c.recv(4096)
+            if not d:
+                break
+            buf += d
+            *lines, buf = buf.split(b"\n")
+            got.extend(x.decode() for x in lines)
+    threading.Thread(target=serve, daemon=True).start()
+    me = "76561198069647509"
+    info = {"fichier": os.path.join(tmp, "match.dem"), "carte": "de_mirage", "tickrate": 64,
+            "joueurs": [{"steamid": me, "nom": "ZayKololo"}],
+            "kills": [{"tick": 2000, "round": 7, "tueur": me, "victime": "1", "arme": "AK-47", "hs": True},
+                      {"tick": 2064, "round": 7, "tueur": me, "victime": "2", "arme": "AK-47", "hs": False}]}
+    rounds = demos.player_rounds(info, me)
+    n0 = len(e.db.moments(limit=1000))
+    d = demos.DemoClipper(e, info, me, rounds, log=lambda *_: None)
+    d.nc.port = srv.getsockname()[1]
+    d.gsi_map = "de_mirage"
+    old_settle = demos.SETTLE_S
+    demos.SETTLE_S = 1.0
+    e.demo = d
+    try:
+        t0 = time.time()
+        d.run()
+    finally:
+        demos.SETTLE_S = old_settle
+        e.demo = None
+    deadline = time.time() + 30
+    while len(e.db.moments(limit=1000)) == n0 and time.time() < deadline:
+        time.sleep(0.3)
+    new = [m for m in e.db.moments(limit=1000) if str(m.get("session", "")).startswith("demo-")]
+    cmds = " | ".join(got)
+    check("démo : CS2 piloté (playdemo, saut, caméra sur le joueur)", d.state == "terminé"
+          and 'playdemo "' in cmds and "demo_gototick" in cmds and "spec_lock_to_accountid 109381781" in cmds
+          and "demo_resume" in cmds, f"{d.state} {d.error} ; {len(got)} commandes en {time.time() - t0:.0f} s")
+    ok = len(new) == 1 and os.path.isfile(new[0]["fichier"]) and new[0]["type"] == "2k" and new[0]["round"] == 7
+    check("démo : round clippé comme en direct", ok, new[0]["fichier"] if new else "aucun clip")
+    for m in new:
+        e.delete_moment(m["id"])
+    srv.close()
+
+
 def test_faceit():
     from faceit import outro_lines, parse_history_item, parse_match_stats
     pid = "abc"
@@ -194,6 +271,7 @@ def test_pipeline(tmp):
                   f"durée {info['duree']:.1f} s, kills {k}")
             check("écart entre les kills raccourci", 4 < (k[1] - k[0]) < 9.5, f"{k[1] - k[0]:.1f} s au lieu de 12.5 s")
             check("miniature du round", bool(m.get("miniature")) and os.path.isfile(m["miniature"]))
+            test_demo(e, tmp)
             import apercu
             r = ff.run(apercu.frame_cmd(m["fichier"], frames=3), timeout=60)
             check("aperçu intégré (onglet Clips)", r.returncode == 0 and len(r.stdout) == 3 * apercu.W * apercu.H * 3,
@@ -220,7 +298,7 @@ def test_pipeline(tmp):
 def run():
     tmp = tempfile.mkdtemp(prefix="hexaclip_test_")
     try:
-        for fn in (test_tracker, test_choice, test_audio, test_faceit):
+        for fn in (test_tracker, test_choice, test_audio, test_demo_logic, test_faceit):
             try:
                 fn()
             except Exception:

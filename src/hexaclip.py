@@ -19,7 +19,7 @@ import webbrowser
 import paths
 from gsi_cs2 import pretty_map
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 APP, BRAND = paths.APP, paths.BRAND
 IS_WIN = sys.platform == "win32"
 
@@ -105,6 +105,202 @@ class Tray:
 # ----------------------------------------------------------------------------
 # Fenêtre
 # ----------------------------------------------------------------------------
+class DemoDialog:
+    """Fenêtre « Importer une démo » : analyse, choix du joueur et des rounds, lecture + enregistrement."""
+
+    def __init__(self, app, path):
+        import demos
+        self.app, self.path, self.demos = app, path, demos
+        tk, ttk = app.tk, app.ttk
+        self.win = w = tk.Toplevel(app.root, bg=C["bg"])
+        w.title("HexaClip · Démo")
+        w.geometry("760x680")
+        w.minsize(640, 520)
+        w.transient(app.root)
+        self.info, self.rounds, self.checked, self.players = None, [], set(), []
+        pad = dict(padx=20)
+        self.title = app.label(w, "Analyse de la démo…", 15, "fg", True)
+        self.title.pack(anchor="w", pady=(18, 2), **pad)
+        self.sub = app.label(w, os.path.basename(path), 9, "muted")
+        self.sub.pack(anchor="w", **pad)
+
+        row = tk.Frame(w, bg=C["bg"])
+        row.pack(fill="x", pady=(14, 6), **pad)
+        app.label(row, "Joueur", 10, "soft", True).pack(side="left")
+        self.player = tk.StringVar()
+        self.pcombo = ttk.Combobox(row, textvariable=self.player, state="readonly", width=38)
+        self.pcombo.pack(side="left", padx=10)
+        self.pcombo.bind("<<ComboboxSelected>>", lambda e: self._fill_rounds())
+        for txt, n in (("3K et plus", 3), ("2K et plus", 2), ("Tous", 1)):
+            app.button(row, txt, lambda n=n: self._check_min(n)).pack(side="right", padx=(6, 0))
+
+        cols = [("sel", "☐", 40, "center"), ("round", "Round", 70, "center"), ("type", "Action", 80, "center"),
+                ("armes", "Armes", 260, "w"), ("hs", "HS", 50, "center")]
+        box, self.tv = app._tree(w, cols, heights=12)
+        box.pack(fill="both", expand=True, pady=(6, 0), **pad)
+        self.tv.column("armes", stretch=True)
+        self.tv.tag_configure("coche", foreground=C["accent"])
+        self.tv.bind("<Button-1>", self._click, add="+")
+        self.tv.bind("<space>", lambda e: self._toggle([int(i) for i in self.tv.selection()]))
+        self.tv.bind("<Double-1>", lambda e: "break")
+
+        self.note = app.label(w, "CS2 va s'ouvrir en mode démo (ferme-le avant s'il est déjà lancé). Laisse le jeu "
+                                 "au premier plan et ne touche à rien pendant la lecture : HexaClip filme chaque "
+                                 "round coché.", 9, "muted", wraplength=700, justify="left")
+        self.note.pack(anchor="w", pady=(10, 0), **pad)
+        foot = tk.Frame(w, bg=C["bg"])
+        foot.pack(fill="x", pady=14, **pad)
+        self.est = app.label(foot, "", 11, "fg", True)
+        self.est.pack(side="left")
+        self.go = app.button(foot, "Clipper ces rounds", self._start, primary=True)
+        self.go.pack(side="right")
+        self.stop_btn = app.button(foot, "Arrêter", self._stop)
+        self.extra = app.button(foot, "Fermer CS2", self._close_cs2)
+        threading.Thread(target=self._analyse, daemon=True).start()
+
+    # --- analyse ---------------------------------------------------------
+    def _analyse(self):
+        try:
+            info = self.demos.analyse(self.path)
+            self.app.call(lambda: self._show(info))
+        except Exception as ex:
+            msg = str(ex)
+            self.app.call(lambda: self._fail(msg))
+
+    def _fail(self, msg):
+        self.title.configure(text="Démo illisible")
+        self.sub.configure(text=msg, fg=C["bad"])
+        self.go.configure(state="disabled")
+
+    def _show(self, info):
+        self.info = info
+        rs = info.get("rounds") or []
+        mins = int((info.get("duree_s") or 0) // 60)
+        self.title.configure(text=f"{pretty_map(info.get('carte', '')) or 'Démo'} · {len(rs)} rounds")
+        self.sub.configure(text=f"{os.path.basename(self.path)} · {mins} min · {len(info.get('kills', []))} kills")
+        js = sorted(info.get("joueurs", []), key=lambda j: -j.get("kills", 0))
+        self.players = js
+        labels = [f"{j['nom']} — {j['kills']} kills ({j['hs']} HS)" for j in js]
+        self.pcombo.configure(values=labels)
+        eng = self.app.engine
+        mine = {str(eng.cfg["steamid"]), str((eng.faceit.profile or {}).get("steamid") or "")} - {""}
+        pseudo = (eng.cfg["faceit_pseudo"] or "").lower()
+        idx = next((i for i, j in enumerate(js) if j["steamid"] in mine), None)
+        if idx is None:
+            idx = next((i for i, j in enumerate(js) if pseudo and j["nom"].lower() == pseudo), 0)
+        if labels:
+            self.pcombo.current(idx)
+        self._fill_rounds()
+
+    def _steamid(self):
+        i = self.pcombo.current()
+        return self.players[i]["steamid"] if 0 <= i < len(self.players) else ""
+
+    def _fill_rounds(self):
+        from moments import LABELS
+        tv = self.tv
+        tv.delete(*tv.get_children())
+        self.rounds = self.demos.player_rounds(self.info, self._steamid())
+        rs = self.info.get("rounds") or []
+        j = self.players[self.pcombo.current()] if self.players and self.pcombo.current() >= 0 else {}
+        if rs and j.get("equipe") in ("CT", "T"):
+            last = rs[-1]
+            a, b = (last["score_ct"], last["score_t"]) if j["equipe"] == "CT" else (last["score_t"], last["score_ct"])
+            res = "Victoire" if a > b else ("Défaite" if a < b else "Égalité")
+            self.title.configure(text=f"{pretty_map(self.info.get('carte', '')) or 'Démo'} · {res} {a}-{b} "
+                                      f"· {len(rs)} rounds")
+        self.checked = {r["round"] for r in self.rounds if len(r["kills"]) >= 2}
+        for r in self.rounds:
+            on = r["round"] in self.checked
+            tv.insert("", "end", iid=str(r["round"]), tags=("coche",) if on else (),
+                      values=("☑" if on else "☐", r["round"], LABELS.get(r["type"], r["type"]),
+                              ", ".join(r["armes"]), r["hs"] or ""))
+        self._update()
+
+    def _paint(self):
+        for r in self.rounds:
+            on = r["round"] in self.checked
+            self.tv.set(str(r["round"]), "sel", "☑" if on else "☐")
+            self.tv.item(str(r["round"]), tags=("coche",) if on else ())
+        self._update()
+
+    def _toggle(self, ids):
+        if not ids:
+            return
+        on = not all(i in self.checked for i in ids)
+        for i in ids:
+            (self.checked.add if on else self.checked.discard)(i)
+        self._paint()
+
+    def _click(self, e):
+        tv = self.tv
+        if tv.identify_region(e.x, e.y) == "cell":
+            row = tv.identify_row(e.y)
+            if row:
+                self._toggle([int(row)])
+                return "break"
+
+    def _check_min(self, n):
+        self.checked = {r["round"] for r in self.rounds if len(r["kills"]) >= n}
+        self._paint()
+
+    def _chosen(self):
+        return [r for r in self.rounds if r["round"] in self.checked]
+
+    def _update(self):
+        ch = self._chosen()
+        if not self.info:
+            return
+        cfg = self.app.engine.cfg
+        sec = self.demos.estimate_s(ch, self.info.get("tickrate"), float(cfg["avant_s"]), float(cfg["apres_s"]))
+        k = sum(len(r["kills"]) for r in ch)
+        self.est.configure(text=(f"{len(ch)} round{'s' if len(ch) > 1 else ''} · {k} kills · "
+                                 f"≈ {max(1, round(sec / 60))} min de lecture") if ch else "Coche au moins un round")
+        self.go.configure(state="normal" if ch else "disabled")
+
+    # --- lecture -----------------------------------------------------------
+    def _start(self):
+        ch = self._chosen()
+        if not ch:
+            return
+        self.extra.pack_forget()
+        d = self.app.engine.start_demo(self.info, self._steamid(), ch)
+        self.go.pack_forget()
+        self.stop_btn.pack(side="right")
+        self.pcombo.configure(state="disabled")
+        self._watch(d)
+
+    def _watch(self, d):
+        if not self.win.winfo_exists():
+            return
+        if d.state in ("terminé", "erreur", "arrêté"):
+            self.stop_btn.pack_forget()
+            self.go.pack(side="right")
+            self.pcombo.configure(state="readonly")
+            if d.state == "terminé":
+                self.est.configure(text=f"Terminé : {d.done_n} passage{'s' if d.done_n > 1 else ''} filmé"
+                                        f"{'s' if d.done_n > 1 else ''}. Les clips sont dans Montage.", fg=C["accent"])
+                self.go.configure(text="Recommencer")
+            else:
+                self.est.configure(text=d.error or d.state, fg=C["bad"] if d.state == "erreur" else C["warn"])
+                if "ouvert sans le mode démo" in (d.error or ""):
+                    self.extra.pack(side="right", padx=8)
+            self.app.refresh_montage(keep_period=False) if self.app.current == "Montage" else None
+            return
+        self.est.configure(text=f"Démo : {d.state}…", fg=C["accent"])
+        self.win.after(500, lambda: self._watch(d))
+
+    def _stop(self):
+        d = self.app.engine.demo
+        if d:
+            d.cancel()
+
+    def _close_cs2(self):
+        self.demos.kill_cs2()
+        self.extra.pack_forget()
+        self.est.configure(text="CS2 fermé. Clique sur « Clipper ces rounds ».", fg=C["fg"])
+
+
 class App:
     TABS = ["Accueil", "Montage", "Clips", "Compils", "Faceit", "Réglages"]
 
@@ -375,6 +571,7 @@ class App:
         self.button(head, "Tout décocher", lambda: self._mt_all(False)).pack(side="right")
         self.button(head, "Tout cocher", lambda: self._mt_all(True)).pack(side="right", padx=8)
         self.button(head, "Sélection auto", self._mt_auto).pack(side="right")
+        self.button(head, "Importer une démo", self._demo_import).pack(side="right", padx=8)
 
         outer = tk.Frame(f, bg=C["bg"])
         outer.pack(fill="both", expand=True)
@@ -406,7 +603,8 @@ class App:
             k = s.get("kills") or 0
             d = fmt_date(s["debut"])
             quand = ("d'" + d) if d.startswith(("aujourd'hui", "hier")) else ("du " + d)
-            out.append((f"Session {quand} · {k} kill{'s' if k > 1 else ''}", ("session", s["session"])))
+            quoi = "Démo" if str(s["session"]).startswith("demo-") else "Session"
+            out.append((f"{quoi} {quand} · {k} kill{'s' if k > 1 else ''}", ("session", s["session"])))
         out.append(("Dernières 24 h", ("since", 1)))
         out.append(("7 derniers jours", ("since", 7)))
         return out
@@ -507,6 +705,16 @@ class App:
             self.button(side, "★" if not m.get("favori") else "Retirer ★",
                         lambda m=m: self._mt_fav(m), bg="panel").pack()
         self._mt_paint()
+
+    # ------------------------------------------------------------- Démos
+    def _demo_import(self):
+        from tkinter import filedialog
+        start = os.path.join(os.path.expanduser("~"), "Downloads")
+        path = filedialog.askopenfilename(
+            parent=self.root, title="Choisis une démo CS2", initialdir=start if os.path.isdir(start) else None,
+            filetypes=[("Démos CS2", "*.dem *.zst *.gz *.bz2"), ("Tous les fichiers", "*.*")])
+        if path:
+            DemoDialog(self, path)
 
     def _match_for(self, m):
         if not m.get("match_faceit"):

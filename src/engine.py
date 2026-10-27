@@ -97,6 +97,7 @@ class Engine:
         self.method_error = ""
         self.cs2_running = False
         self.last_gsi = 0.0                  # dernier message de CS2 (preuve que le jeu tourne)
+        self.demo = None                     # lecture de démo en cours (demos.DemoClipper)
         self.session_id = None
         self.session_start = None
         self.session_moments = 0
@@ -288,6 +289,14 @@ class Engine:
     # ------------------------------------------------------------------ actions
     def _on_gsi(self, payload, t):
         self.last_gsi = time.time()
+        me = str((payload.get("provider") or {}).get("steamid") or "")
+        if me.isdigit() and me != self.cfg["steamid"]:
+            self.cfg["steamid"] = me
+            self.cfg.save()
+        d = self.demo
+        if d is not None and d.state not in ("terminé", "erreur", "arrêté"):
+            d.on_gsi(payload, t)          # démo en lecture : pas de détection « en direct »
+            return
         self.tracker.min_kills = int(self.cfg["kills_min"])
         self.tracker.feed(payload, t)
 
@@ -306,7 +315,7 @@ class Engine:
                 + "_" + m["type"])
         folder = self.cfg.sub(os.path.join("clips", day))
         out = os.path.join(folder, stem + ".mp4")
-        session = self.session_id
+        session = m.get("session") or self.session_id
 
         def done(path, to_file, err):
             if not path:
@@ -329,6 +338,33 @@ class Engine:
                 self.events.put(("kill", f"{LABELS.get(m['type'], m['type'])}{where} gardé."))
 
         self.recorder.save(keep, out, done)
+
+    # ------------------------------------------------------------------ démos
+    def start_demo(self, info, steamid, rounds):
+        """Lance la lecture + l'enregistrement des rounds choisis d'une démo (en tâche de fond)."""
+        import demos
+        if self.demo is not None and self.demo.state not in ("terminé", "erreur", "arrêté"):
+            return self.demo
+        d = demos.DemoClipper(self, info, steamid, rounds, log=log)
+        self.demo = d
+
+        def run():
+            n0 = self.db_count()
+            d.run()
+            n = self.db_count() - n0
+            if d.state == "terminé":
+                self.emit("clip", f"Démo terminée : {n} round{'s' if n > 1 else ''} clippé{'s' if n > 1 else ''}, "
+                                  "à retrouver dans Montage.")
+            else:
+                self.emit("erreur", f"Démo : {d.error}")
+        threading.Thread(target=run, daemon=True).start()
+        return d
+
+    def db_count(self):
+        try:
+            return len(self.db.moments(limit=100000))
+        except Exception:
+            return 0
 
     def manual_clip(self):
         if not self.recorder.running:
@@ -489,6 +525,7 @@ class Engine:
             "rec": self.recorder.running,
             "son": self.recorder.has_audio,
             "son_nom": self.recorder.audio_name,
+            "demo": (self.demo.state if self.demo else ""),
             "son_silence_s": self.recorder.audio_silent_for(),
             "method": self.method,
             "method_error": self.method_error,

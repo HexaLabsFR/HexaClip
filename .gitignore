@@ -8,3 +8,6 @@ notes.txt
 *.log
 ffmpeg.zip
 ffmpeg_test/
+src/bin/
+outils/analyse_demo/go.local.mod
+outils/analyse_demo/go.local.sum
