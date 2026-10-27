@@ -71,6 +71,9 @@ jobs:
           $env:HEXACLIP_DATA = "$env:RUNNER_TEMP\hexaclip_data"
           $p = Start-Process -FilePath "dist\HexaClip.exe" -ArgumentList "--selftest","--out","selftest.txt" -Wait -PassThru
           Get-Content selftest.txt -Encoding utf8
+          # lignes en échec remontées en annotations (lisibles sans ouvrir le journal)
+          Get-Content selftest.txt -Encoding utf8 | Where-Object { $_ -match "ERREUR|MANQUANTE|Bilan|Traceback|Error" } | Select-Object -First 9 | ForEach-Object {
+            $l = $_ -replace '%', '%25' -replace "`r", '' ; if ($l -match "Bilan") { Write-Host "::notice::$l" } else { Write-Host "::error::$l" } }
           if ($p.ExitCode -ne 0) { Write-Error "Code de sortie $($p.ExitCode)"; exit 1 }
           $t = Get-Content selftest.txt -Raw -Encoding utf8
           if ($t -match "ERREUR|MANQUANTE") { Write-Error "Vérification en échec"; exit 1 }
