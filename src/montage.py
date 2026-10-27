@@ -243,6 +243,10 @@ def build(chosen, out_path, opts):
         cfg = opts["transitions_cfg"]
         tplan = tr.plan(len(segs) - 1, cfg["actives"], cfg.get("ouverture") if opts.get("intro_file") else None,
                         cfg.get("graine"))
+        if not opts.get("intro_file") and tplan:
+            # pas d'intro : la transition d'ouverture passe quand même avant le 1er clip (voir plus bas)
+            tplan = tr.plan(len(segs) - 1, [t for t in cfg["actives"] if t != cfg.get("ouverture")] or cfg["actives"],
+                            None, cfg.get("graine"))
         if opts.get("trans_force"):                 # aperçu de la bibliothèque : ordre imposé
             tplan = list(opts["trans_force"])[:len(segs) - 1]
         stingers = opts.get("stingers") or {}
@@ -272,6 +276,11 @@ def build(chosen, out_path, opts):
     ends.append(cur_len)
     last_v, last_a = cur_v, cur_a
     total = cur_len
+    if trans and not opts.get("intro_file") and not opts.get("trans_force"):
+        o_id = (opts.get("transitions_cfg") or {}).get("ouverture")
+        o_t = tr.BY_ID.get(o_id)
+        if o_t is not None and o_t.famille == "habillage" and o_t.effet in (opts.get("stingers") or {}):
+            events.insert(0, (0.0, o_t))         # ouverture sur le 1er clip (début de l'animation coupé)
 
     # filigrane (plaque pseudo ou logo) : une seule image, visible pendant les clips seulement
     logo = opts.get("plaque") or opts.get("logo") or paths.res("assets", "filigrane.png")
@@ -308,7 +317,8 @@ def build(chosen, out_path, opts):
         chains.append(f"[{si}:v]{fit}format=rgba,fps={FPS},split={len(uses)}" +
                       "".join(f"[s{src}{j}]" for j in range(len(uses))))
         for j, at in enumerate(uses):
-            chains.append(f"[s{src}{j}]setpts=PTS-STARTPTS+{max(0.0, at - info['cut']):.3f}/TB[d{src}{j}]")
+            skip = f"trim=start={info['cut'] - at:.3f}," if at < info["cut"] else ""
+            chains.append(f"[s{src}{j}]{skip}setpts=PTS-STARTPTS+{max(0.0, at - info['cut']):.3f}/TB[d{src}{j}]")
             chains.append(f"{last_v}[d{src}{j}]overlay=eof_action=pass:format=auto[o{src}{j}]")
             last_v = f"[o{src}{j}]"
         if info.get("audio"):                  # son du fichier de transition (pack)
@@ -316,7 +326,8 @@ def build(chosen, out_path, opts):
                           "".join(f"[sa{src}{j}]" for j in range(len(uses))))
             for j, at in enumerate(uses):
                 ms = int(max(0.0, at - info["cut"]) * 1000)
-                chains.append(f"[sa{src}{j}]adelay={ms}|{ms},apad,atrim=0:{total:.3f}[sb{src}{j}]")
+                askip = f"atrim=start={info['cut'] - at:.3f},asetpts=PTS-STARTPTS," if at < info["cut"] else ""
+                chains.append(f"[sa{src}{j}]{askip}adelay={ms}|{ms},apad,atrim=0:{total:.3f}[sb{src}{j}]")
             chains.append(f"{last_a}" + "".join(f"[sb{src}{j}]" for j in range(len(uses))) +
                           f"amix=inputs={len(uses) + 1}:duration=first:normalize=0[am{src}]")
             last_a = f"[am{src}]"

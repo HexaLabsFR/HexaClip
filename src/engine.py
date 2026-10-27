@@ -148,14 +148,20 @@ class Engine:
     def detect_pack(self, force=False):
         """Trouve la transition de ton pack Twitch (stinger) pour la mettre après l'intro."""
         cur = self.cfg["compil_pack_fichier"]
-        if cur and os.path.isfile(cur) and not force:
-            return cur
         try:
             import transitions
             path, cut = transitions.find_pack()
         except Exception:
             log_error("recherche du pack")
-            return None
+            return cur if cur and os.path.isfile(cur) else None
+        if cur and os.path.isfile(cur) and not force:
+            # garder le fichier choisi, sauf si un pack plus récent est apparu (pack mis à jour)
+            try:
+                newer = bool(path) and path != cur and os.path.getmtime(path) > os.path.getmtime(cur)
+            except OSError:
+                newer = False
+            if not newer:
+                return cur
         if path:
             self.cfg["compil_pack_fichier"] = path
             if cut:
