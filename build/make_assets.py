@@ -17,9 +17,9 @@ BG = "#0B0F14"
 HEX = "100,20 169.3,60 169.3,140 100,180 30.7,140 30.7,60"
 
 
-def coupe_svg(color=MINT, hole=BG, play=True, gap=(5, -9), stroke=10, app_bg=None, scale=1.0):
+def coupe_svg(color=MINT, hole=BG, play=True, gap=(5, -9), stroke=10, app_bg=None, scale=1.0, tri_pts=None):
     """Hexagone plein, coupé en diagonale, moitié haute décalée ; play évidé au centre."""
-    tri = f'<polygon points="82,70 82,130 134,100" fill="{hole}"/>' if play else ""
+    tri = f'<polygon points="{tri_pts or "82,70 82,130 134,100"}" fill="{hole}"/>' if play else ""
     hexa = f'<polygon points="{HEX}" fill="{color}" stroke="{color}" stroke-width="{stroke}" stroke-linejoin="round"/>'
     bg = ""
     if app_bg:
@@ -45,11 +45,12 @@ def render(svg, size):
 
 
 def app_icon(size):
-    # petites tailles : coupe plus marquée et sans play (illisible en dessous de 32 px)
+    """Icône d'app (fond sombre arrondi). En petit, même dessin que le logo « Coupe » : play agrandi et
+    décalage de la coupe un peu plus marqué pour rester lisibles dans la barre des tâches."""
     if size <= 24:
-        svg = coupe_svg(play=False, gap=(9, -17), stroke=14, app_bg=BG, scale=0.82)
+        svg = coupe_svg(app_bg=BG, scale=0.86, gap=(7, -12), stroke=8, tri_pts="78,64 78,136 140,100")
     elif size <= 48:
-        svg = coupe_svg(gap=(7, -12), stroke=12, app_bg=BG, scale=0.76)
+        svg = coupe_svg(app_bg=BG, scale=0.80, gap=(6, -10), stroke=9, tri_pts="80,67 80,133 137,100")
     else:
         svg = coupe_svg(app_bg=BG, scale=0.72)
     return render(svg, size)
@@ -86,7 +87,7 @@ def wordmark(height=120, shadow=True):
 
 
 def main():
-    sizes = [16, 24, 32, 48, 64, 128, 256]
+    sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
     icons = {s: app_icon(s) for s in sizes}
     icons[256].save(os.path.join(OUT, "hexaclip.ico"), sizes=[(s, s) for s in sizes],
                     append_images=[icons[s] for s in sizes if s != 256])

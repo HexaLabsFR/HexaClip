@@ -19,7 +19,7 @@ import webbrowser
 import paths
 from gsi_cs2 import pretty_map
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 APP, BRAND = paths.APP, paths.BRAND
 IS_WIN = sys.platform == "win32"
 

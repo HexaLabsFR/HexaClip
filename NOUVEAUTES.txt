@@ -1,8 +1,4 @@
-HexaClip 0.2.0 — tous tes kills, et tu choisis
+HexaClip 0.2.1
 
-- Chaque kill est maintenant gardé (plus seulement les 3k et +), avec un passage par kill
-- Nouvel onglet Montage façon Allstar : rounds groupés par partie, image du round, puces Kill 1 / Kill 2 · HS à cocher, aperçu, sélection auto, compteur de durée, Créer la compil
-- Les kills éloignés d'un même round sont recollés sans le temps mort entre eux
-- Mises à jour automatiques comme HexaRise : vérification au démarrage puis toutes les 4 h, bouton Redémarrer (ou installée en quittant)
-- À la fermeture de CS2 : notification pour choisir tes kills (la compil 100 % auto reste disponible dans les réglages)
-- Clips gardés 7 jours par défaut (favoris toujours gardés)
+- Icône de la barre des tâches et de la fenêtre fidèle au logo « Coupe » (play visible et coupe décalée, même en petit)
+- Tailles d'icône 20 et 40 px ajoutées pour les écrans à 125 % et 150 %
