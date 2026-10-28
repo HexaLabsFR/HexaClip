@@ -192,6 +192,16 @@ def test_demo(e, tmp):
           d.slot == 1 and "spec_player 1" in cmds and "demo_ui_mode 0" in cmds and cmds[-1] == "quit"
           and any(c.startswith("startmovie hexaclip_s01") for c in cmds) and "endmovie" in cmds
           and ticks == sorted(ticks), " | ".join(cmds[-6:]))
+    # plusieurs passages : on avance toujours dans la démo (pas de retour au début), rendu seulement pendant
+    rs2 = [{"round": 3, "kills": [{"tick": 9000}]}, {"round": 9, "kills": [{"tick": 40000}, {"tick": 40100}]}]
+    sq = demos.sequences_for(rs2, 64, 3.5, 1.8, 1)
+    acts = demos.actions_json(sq, 64, 1)[0]["actions"]
+    jumps = [int(x["cmd"].split()[1]) for x in acts if x["cmd"].startswith("demo_gototick")]
+    fr = [x["cmd"] for x in acts if x["cmd"].startswith("host_framerate")]
+    check("démo : sauts uniquement vers l'avant, rendu image par image seulement pendant les passages",
+          len(sq) == 2 and len(jumps) == 2 and jumps == sorted(jumps) and 0 not in jumps
+          and fr == ["host_framerate 0", "host_framerate 60", "host_framerate 0", "host_framerate 60", "host_framerate 0"],
+          f"sauts {jumps} ; {fr}")
     # module ajouté puis retiré de CS2 (faux dossier du jeu)
     csgo = os.path.join(tmp, "game", "csgo")
     os.makedirs(csgo, exist_ok=True)

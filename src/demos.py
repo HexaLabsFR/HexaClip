@@ -135,8 +135,8 @@ def estimate_s(rounds, tickrate, pre, post):
     tot = 0.0
     for r in rounds:
         for a, b, _ in segments(r["kills"], tickrate, pre, post):
-            tot += (b - a) / float(tickrate or 64) + SETTLE_S + 1.0
-    return tot + 40          # chargement de la démo
+            tot += (b - a) / float(tickrate or 64) * 1.3 + 4.0
+    return tot + 75          # lancement de CS2 + chargement de la démo + encodage
 
 
 def prepare_dem(path):
@@ -279,14 +279,13 @@ SETUP = ["sv_cheats 1", "volume 1", "demo_ui_mode 0", "cl_hud_telemetry_frametim
          "cl_hud_telemetry_net_misdelivery_show 0", "cl_hud_telemetry_ping_show 0",
          "cl_hud_telemetry_serverrecvmargin_graph_show 0", "cl_trueview_show_status 0", "r_show_build_info 0",
          "cl_demo_predict 1", "cl_draw_only_deathnotices 1", "spec_show_xray 0", "snd_mute_losefocus 0",
-         "engine_no_focus_sleep 0", "tv_listen_voice_indices 0", "tv_listen_voice_indices_h 0",
-         f"host_framerate {FPS}"]
+         "engine_no_focus_sleep 0", "tv_listen_voice_indices 0", "tv_listen_voice_indices_h 0", "host_framerate 0"]
 
 
 def sequences_for(rounds, tickrate, pre, post, slot):
-    """[(nom, tick_debut, tick_fin, round, [kills])] : un passage par groupe de kills proches."""
+    """[(nom, tick_debut, tick_fin, round, [kills])] : un passage par groupe de kills proches, dans l'ordre."""
     out, n = [], 0
-    for r in rounds:
+    for r in sorted(rounds, key=lambda r: r["round"]):
         for a, b, ks in segments(r["kills"], tickrate, pre, post):
             n += 1
             out.append((f"{SEQ_PREFIX}{n:02d}", max(2, a), b, r, ks))
@@ -294,46 +293,77 @@ def sequences_for(rounds, tickrate, pre, post, slot):
 
 
 def actions_json(seqs, tickrate, slot):
-    """Contenu du fichier <démo>.json : une séquence d'actions {tick, cmd} par passage (format CS Demo Manager)."""
+    """Contenu du fichier <démo>.json pour le module (format CS Demo Manager : [{"actions": [{tick, cmd}]}]).
+
+    Une seule séquence qui avance dans la démo : saut direct d'un passage au suivant (jamais de retour au
+    début), rendu image par image (host_framerate) seulement pendant les passages : les sauts et la lecture
+    entre deux passages restent à vitesse normale."""
     tr = int(round(tickrate or 64))
-    data = []
+    acts = [{"tick": 1, "cmd": c} for c in SETUP]
+    cur = 1                                   # tick où se trouve la lecture avant le passage
     for i, (name, a, b, r, ks) in enumerate(seqs):
-        setup = max(1, a - tr)
-        acts = [{"tick": 1, "cmd": c} for c in SETUP]
-        acts.append({"tick": max(1, a - 4), "cmd": "pause_playback"})       # évite l'écran de chargement
-        acts.append({"tick": 1, "cmd": f"demo_gototick {max(1, setup - 1)}"})
+        setup = max(cur + 1, a - tr)
+        if setup - cur > tr * 3:              # loin : saut direct juste avant le passage
+            acts.append({"tick": cur, "cmd": f"demo_gototick {setup - 1}"})
         for t in (setup, a - 2):
-            acts.append({"tick": max(1, t), "cmd": "spec_mode 1"})
-            acts.append({"tick": max(1, t), "cmd": f"spec_player {slot}"})
+            acts.append({"tick": max(setup, t), "cmd": "spec_mode 1"})
+            acts.append({"tick": max(setup, t), "cmd": f"spec_player {slot}"})
+        acts.append({"tick": max(setup, a - 4), "cmd": "pause_playback"})   # laisse CS2 finir de charger le décor
+        acts.append({"tick": a, "cmd": f"host_framerate {FPS}"})
         acts.append({"tick": a, "cmd": f"startmovie {name} jpg wav"})
         acts.append({"tick": b, "cmd": "endmovie"})
-        last = i == len(seqs) - 1
-        acts.append({"tick": b + tr, "cmd": "quit" if last else "go_to_next_sequence"})
-        data.append({"actions": sorted(acts, key=lambda x: x["tick"])})
-    return data
+        acts.append({"tick": b, "cmd": "host_framerate 0"})
+        cur = b + 2
+    acts.append({"tick": cur + 4, "cmd": "quit"})
+    acts.sort(key=lambda x: x["tick"])          # tri stable : l'ordre des commandes d'un même tick est gardé
+    return [{"actions": acts}]
+
+
+def _movie_roots(csgo):
+    return [os.path.join(csgo, PLUGIN_DIR, "movie"), os.path.join(csgo, "movie"), os.path.join(csgo, PLUGIN_DIR)]
 
 
 def find_movie_files(csgo, name):
-    """(images triées, fichier son ou None) écrits par « startmovie name » sous game/csgo
-    (images dans csgo/hexaclip/movie, son dans csgo/movie depuis la mise à jour « Armory »)."""
-    roots = [os.path.join(csgo, PLUGIN_DIR, "movie"), os.path.join(csgo, "movie"), os.path.join(csgo, PLUGIN_DIR), csgo]
+    """(images triées, fichier son ou None) écrits par « startmovie name » : CS2 les range dans des sous-dossiers
+    datés (images dans csgo/hexaclip/movie/…, son dans csgo/movie/…)."""
     imgs, wav = [], None
-    for root in roots:
+    low_name = name.lower()
+    for root in _movie_roots(csgo):
         if not os.path.isdir(root):
             continue
-        found = []
-        for fn in os.listdir(root):
-            low = fn.lower()
-            if not low.startswith(name.lower()):
-                continue
-            rest = low[len(name):]
-            if low.endswith((".jpg", ".jpeg", ".tga")) and rest.split(".")[0].isdigit():
-                found.append(os.path.join(root, fn))
-            elif low.endswith(".wav") and wav is None:
-                wav = os.path.join(root, fn)
-        if found and not imgs:
-            imgs = sorted(found)
+        for dirpath, _, files in os.walk(root):
+            found = []
+            for fn in files:
+                low = fn.lower()
+                if not low.startswith(low_name):
+                    continue
+                rest = low[len(low_name):]
+                if low.endswith((".jpg", ".jpeg", ".tga")) and rest.split(".")[0].isdigit():
+                    found.append(os.path.join(dirpath, fn))
+                elif low == low_name + ".wav" and wav is None:
+                    wav = os.path.join(dirpath, fn)
+            if found and not imgs:
+                imgs = sorted(found)
     return imgs, wav
+
+
+def clear_movies(csgo):
+    """Efface les images/sons de rendus HexaClip (et les dossiers datés vidés)."""
+    for root in _movie_roots(csgo):
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirs, files in os.walk(root, topdown=False):
+            for fn in files:
+                if fn.lower().startswith(SEQ_PREFIX):
+                    try:
+                        os.remove(os.path.join(dirpath, fn))
+                    except OSError:
+                        pass
+            if dirpath != root:
+                try:
+                    os.rmdir(dirpath)                 # seulement s'il est vide
+                except OSError:
+                    pass
 
 
 def encode_movie(imgs, wav, out_path, encoder="libx264", fps=FPS):
@@ -420,7 +450,7 @@ class DemoClipper:
             return self.STEPS[self.state], None
         n = max(1, self.total)
         frac = 0.1 + 0.7 * self.done_n / n + 0.2 * self.encoded_n / n
-        left = int(sum((b - a) / self.tr * 1.5 + 4 for _, a, b, _, _ in self.seqs[self.done_n:]) + 6 * (n - self.encoded_n))
+        left = int(sum((b - a) / self.tr * 1.3 + 4 for _, a, b, _, _ in self.seqs[self.done_n:]) + 3 * (n - self.encoded_n))
         return min(0.99, frac), left
 
     def _watch_log(self, logf):
@@ -454,14 +484,7 @@ class DemoClipper:
             self.csgo = csgo
             if cs2_alive():
                 raise DemoError("CS2 est ouvert : ferme-le, HexaClip le relance en mode rendu.")
-            # nettoyage d'un rendu précédent
-            for d in (os.path.join(csgo, PLUGIN_DIR, "movie"), os.path.join(csgo, "movie")):
-                for fn in (os.listdir(d) if os.path.isdir(d) else []):
-                    if fn.lower().startswith(SEQ_PREFIX):
-                        try:
-                            os.remove(os.path.join(d, fn))
-                        except OSError:
-                            pass
+            clear_movies(csgo)                      # restes d'un rendu précédent
             with open(dem + ".json", "w", encoding="utf-8") as f:
                 json.dump(actions_json(self.seqs, self.tr, self.slot), f)
             install_plugin(csgo)
@@ -494,6 +517,7 @@ class DemoClipper:
             self.done_n = self.total
             self.state = "encodage des clips"
             self._encode_all()
+            clear_movies(csgo)
             self.state = "terminé"
         except DemoError as ex:
             self.error = str(ex)
@@ -504,6 +528,14 @@ class DemoClipper:
         finally:
             if self.cancelled and cs2_alive() and self.proc_started:
                 kill_cs2()
+            if self.state == "erreur" and csgo and self.encoded_n == 0 and "aucune image" not in self.error:
+                try:                                 # garder ce qui a déjà été calculé
+                    self._encode_all()
+                    if self.encoded_n:
+                        self.error += f" ({self.encoded_n} passage(s) déjà calculé(s) gardé(s))"
+                    clear_movies(csgo)
+                except Exception:
+                    pass
             if csgo:
                 restore_gameinfo(csgo)
             cleanup()
