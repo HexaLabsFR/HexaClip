@@ -9,3 +9,6 @@ HexaClip 0.4.0 — clips à partir de tes démos
 - Anciens clips : contrôlés une fois au lancement. Ceux dont la lecture restait bloquée sur la première image sont réparés ; ceux dont l'image était figée sont écartés des compils (filtre « Images figées » dans Clips pour les supprimer d'un coup).
 - Écran de fin : colle le lien de ton overlay FaceitSync dans Réglages > Compils TikTok. La fin des compils affiche alors la même carte que sur ton stream (niveau, Elo, classement, variation du jour, derniers matchs, stats de la session, dernier match), à jour au moment du montage. Bouton « Voir l'aperçu de l'écran de fin ».
 - Correctif : l'écran de fin affichait l'Elo actuel comme un gain (« +1100 ELO »). Il affiche maintenant « 1 100 ELO », et « +75 ELO » seulement quand c'est vraiment ce que tu as gagné.
+- Onglet Clips : filtres cumulables par date (aujourd'hui, hier, 7 ou 30 jours, ou un jour précis), map, action (1 kill à ACE), source (en direct / démos) et statut (favoris, écartés, images figées).
+- Onglet Clips : sélection multiple comme dans l'Explorateur Windows (Ctrl+clic, Maj+clic, Ctrl+Maj+clic, Ctrl+A) ; les cases ☐ suivent la sélection et toutes les actions s'appliquent aux clips sélectionnés.
+- Barre de chargement sous les onglets pendant la création d'une compil (étape en cours + pourcentage) et pendant le rendu d'une démo.

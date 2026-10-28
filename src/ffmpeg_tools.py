@@ -68,6 +68,38 @@ def run(args, timeout=None, check=False, capture=True, stdin=None):
     return r
 
 
+def run_progress(args, total_s, on_progress, timeout=None):
+    """Comme run() pour FFmpeg, en appelant on_progress(fraction 0..1) au fil de l'encodage.
+    total_s : durée attendue de la sortie. Renvoie un CompletedProcess (stdout vide)."""
+    import threading
+    import time
+    cmd = [args[0], "-progress", "pipe:1", "-nostats"] + list(args[1:])
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                         creationflags=NO_WINDOW)
+    err = []
+    t = threading.Thread(target=lambda: err.append(p.stderr.read()), daemon=True)
+    t.start()
+    end = time.time() + timeout if timeout else None
+    try:
+        for raw in p.stdout:
+            line = raw.decode("utf-8", "ignore").strip()
+            if line.startswith(("out_time_us=", "out_time_ms=")) and total_s:
+                try:
+                    us = int(line.split("=", 1)[1])
+                    on_progress(max(0.0, min(1.0, us / 1e6 / float(total_s))))
+                except (ValueError, ZeroDivisionError):
+                    pass
+            if end and time.time() > end:
+                p.kill()
+                break
+        p.wait(timeout=30)
+    finally:
+        if p.poll() is None:
+            p.kill()
+    t.join(5)
+    return subprocess.CompletedProcess(cmd, p.returncode, b"", err[0] if err else b"")
+
+
 def popen(args, **kw):
     kw.setdefault("creationflags", NO_WINDOW)
     return subprocess.Popen(args, **kw)

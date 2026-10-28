@@ -103,6 +103,7 @@ class Engine:
         self.session_start = None
         self.session_moments = 0
         self.busy = ""                       # tâche longue en cours (montage, téléchargement…)
+        self.progress = None                 # (fraction, texte) de la compil en cours de montage
         self._stop = threading.Event()
         self._hotkey = None
         self._compile_lock = threading.Lock()
@@ -448,6 +449,7 @@ class Engine:
             if self.cfg["compil_fin_faceit"] and url:
                 import overlay_fin
                 self.busy = "Capture de ton overlay FaceitSync…"
+                self.progress = (0.0, "Lecture de ton overlay FaceitSync")
                 png = overlay_fin.capture(url, paths.data("overlay_fin.png"))
                 self.busy = ""
                 if png:
@@ -495,7 +497,11 @@ class Engine:
                 import intro
                 opts["intro"] = intro.hook(items)
             self.busy = f"Montage de la compil ({n_kills} kills)…"
-            out, dur = montage.make(items, self.cfg.sub("compils"), opts, log=log)
+            self.progress = (0.0, "Préparation")
+
+            def prog(frac, label):
+                self.progress = (frac, label)
+            out, dur = montage.make(items, self.cfg.sub("compils"), opts, log=log, progress=prog)
             self.db.add_compil(out, dur, [m["id"] for m in items], session)
             self.emit("compil", f"Compil prête : {os.path.basename(out)} ({dur:.0f} s)")
             return out
@@ -505,6 +511,7 @@ class Engine:
             return None
         finally:
             self.busy = ""
+            self.progress = None
             self._compile_lock.release()
 
     # ------------------------------------------------------------------ Faceit
@@ -585,6 +592,7 @@ class Engine:
             "method": self.method,
             "method_error": self.method_error,
             "busy": self.busy,
+            "progress": self.progress,
             "carte": self.tracker.map,
             "round": self.tracker.round_no,
             "kills_round": len(self.tracker.kills),

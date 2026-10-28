@@ -439,7 +439,7 @@ def prepare_transitions(opts, th, work, log=print):
                                "graine": opts.get("trans_graine", _r.randrange(1 << 30))}
 
 
-def make(chosen, out_dir, opts, log=print):
+def make(chosen, out_dir, opts, log=print, progress=None):
     """Monte la compil. Renvoie (chemin, durée). Repli sur libx264 si l'encodeur matériel refuse.
     opts : style (spectre | hexaclip), intro = (titre, sous_titre), pseudo, appel (texte de fin),
     transitions (bool), en plus de build()."""
@@ -454,7 +454,9 @@ def make(chosen, out_dir, opts, log=print):
     opts["theme"] = th
     pseudo = (opts.get("pseudo") or "").strip()
     trans = bool(opts.get("transitions", True))
+    step = progress or (lambda frac, label: None)
     try:
+        step(0.02, "Préparation des transitions")
         if trans:
             try:
                 prepare_transitions(opts, th, work, log)
@@ -466,6 +468,7 @@ def make(chosen, out_dir, opts, log=print):
             opts["plaque"] = th.nameplate(pseudo, os.path.join(work, "plaque.png"))
             tmp.append(opts["plaque"])
         if opts.get("intro"):
+            step(0.08, "Animation de l'intro")
             p = os.path.join(work, "intro.mp4")
             try:
                 if hasattr(th, "render_intro"):
@@ -477,6 +480,7 @@ def make(chosen, out_dir, opts, log=print):
             except Exception as e:
                 log(f"Intro ignorée : {e}")
         if opts.get("fin") is not None or pseudo or opts.get("appel"):
+            step(0.16, "Écran de fin")
             p = os.path.join(work, "fin.mp4")
             try:
                 opts["outro_file"] = th.render_outro(p, pseudo, opts.get("fin"), opts.get("appel", ""))
@@ -484,7 +488,8 @@ def make(chosen, out_dir, opts, log=print):
                 tmp.append(p)
             except Exception as e:
                 log(f"Écran de fin animé ignoré : {e}")
-        return _make(chosen, out, opts, log)
+        step(0.24, "Montage de la vidéo")
+        return _make(chosen, out, opts, log, lambda f: step(0.24 + 0.76 * f, "Montage de la vidéo"))
     finally:
         for p in tmp:
             try:
@@ -493,13 +498,13 @@ def make(chosen, out_dir, opts, log=print):
                 pass
 
 
-def _make(chosen, out, opts, log):
+def _make(chosen, out, opts, log, on_progress=None):
     enc = opts.get("encodeur", "libx264")
     tries = [enc] + (["libx264"] if enc != "libx264" else [])
     last = None
     for e in tries:
         cmd, total = build(chosen, out, {**opts, "encodeur": e})
-        r = ff.run(cmd, timeout=900)
+        r = ff.run_progress(cmd, total, on_progress, timeout=900) if on_progress else ff.run(cmd, timeout=900)
         if r.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 10000:
             return out, total
         last = (r.stderr or b"").decode("utf-8", "ignore")[-3000:]
