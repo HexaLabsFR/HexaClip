@@ -269,6 +269,26 @@ def test_faceit():
           and s["carte"] == "Inferno" and s["victoire"] == 0, str(s))
     o = outro_lines({"elo": 1812, "niveau": 8, "delta": 75, "victoires": 3, "defaites": 1})
     check("écran de fin", o and o["ligne1"] == "+75 ELO cette session", str(o))
+    # écran de fin : l'Elo actuel n'est pas affiché comme un gain (« +1100 ELO »), carte de l'overlay FaceitSync
+    import json as _json
+    import spectre
+    import overlay_fin
+    lines = outro_lines({"elo": 1100, "niveau": 5, "delta": 0})
+    import re as _re
+    m = _re.match(r"^([+-]\d[\d\u202f ]*)\s*(.*)$", lines["ligne1"])
+    data = {"success": True, "elo": 1100, "level": 5, "display_name": "ZayKo", "faceit_region": "EU",
+            "faceit_regional_ranking": 21708, "season": {"number": 9},
+            "sessionStats": {"elo_change": -86, "total_matches": 5},
+            "sessionFaceitStats": {"kd_ratio": 0.94, "adr": 81.2, "headshots_percent": 47.2, "win_rate_percent": 20,
+                                   "matches": 5},
+            "recentMatches": [{"change": -20, "result": "loss"}, {"change": 21, "result": "win", "player_won": 1}],
+            "lastMatch": {"mapName": "Mirage", "score": {"own": 11, "opp": 13}, "kills": 34,
+                          "multiKills": {"k4": 2}}}
+    card = overlay_fin.draw_card(data)
+    ok_api = overlay_fin.api_url("https://faceitsync.com/overlay/u/1/abc?x=1") == \
+        "https://faceitsync.com/api/overlay/u/1/abc"
+    check("écran de fin : Elo sans « + », carte de l'overlay FaceitSync", m is None and card.size == (960, 470)
+          and card.getpixel((480, 235))[3] > 200 and ok_api, lines["ligne1"])
 
 
 def test_pipeline(tmp):

@@ -749,6 +749,35 @@ class App:
                         lambda m=m: self._mt_fav(m), bg="panel").pack()
         self._mt_paint()
 
+    def _preview_outro(self):
+        """Capture l'overlay FaceitSync (si un lien est donné) et montre l'écran de fin tel qu'il sortira."""
+        self._save_settings()
+
+        def run():
+            import overlay_fin
+            import montage
+            try:
+                th = montage.theme_module(self.cfg["compil_style"])
+                fin = None
+                if self.engine.faceit.configured():
+                    from faceit import outro_lines
+                    fin = outro_lines(self.engine.faceit.session_summary(time.time() - 6 * 3600))
+                url = (self.cfg["faceitsync_overlay"] or "").strip()
+                if url:
+                    png = overlay_fin.capture(url, paths.data("overlay_fin.png"))
+                    if not png:
+                        self.engine.emit("erreur", "Overlay FaceitSync : capture impossible (vérifie le lien).")
+                    else:
+                        fin = dict(fin or {}, overlay=png)
+                frames = list(th.outro_frames(self.cfg["pseudo"], fin, self.cfg["compil_appel"]))
+                out = paths.data("apercu_fin.png")
+                frames[-1].save(out)
+                self.call(lambda: open_path(out))
+            except Exception as ex:
+                msg = str(ex)
+                self.engine.emit("erreur", f"Aperçu de l'écran de fin : {msg}")
+        threading.Thread(target=run, daemon=True).start()
+
     # ------------------------------------------------------------- Démos
     def _demo_import(self):
         from tkinter import filedialog
@@ -1423,6 +1452,11 @@ class App:
         self.label(f, "Vide = ton pseudo (ou le logo HexaClip si tu n'as pas mis de pseudo).", 9, "muted").pack(
             anchor="w")
         row("Écran de fin avec l'Elo Faceit", check("compil_fin_faceit"))
+        row("Overlay FaceitSync (lien)", entry("faceitsync_overlay", 46), "remplace l'Elo à la fin")
+        r = tk.Frame(f, bg=C["bg"])
+        r.pack(fill="x", pady=(0, 4))
+        self.label(r, "", 10, "soft", width=30).pack(side="left")
+        self.button(r, "Voir l'aperçu de l'écran de fin", self._preview_outro).pack(side="left")
         self._transition_library(f, section, row, combo, entry, folder)
         row("Ajouter une musique", check("musique_on"), "fichiers libres de droits uniquement")
         row("Dossier des musiques", folder("musique_dossier", "Dossier de musiques"))

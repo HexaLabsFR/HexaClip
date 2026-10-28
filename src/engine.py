@@ -444,6 +444,16 @@ class Engine:
                     fin = outro_lines(self.faceit.session_summary(since or self.session_start or time.time()))
                 except Exception:
                     log_error("résumé Faceit")
+            url = (self.cfg["faceitsync_overlay"] or "").strip()
+            if self.cfg["compil_fin_faceit"] and url:
+                import overlay_fin
+                self.busy = "Capture de ton overlay FaceitSync…"
+                png = overlay_fin.capture(url, paths.data("overlay_fin.png"))
+                self.busy = ""
+                if png:
+                    fin = dict(fin or {}, overlay=png)
+                else:
+                    log("Overlay FaceitSync : capture impossible (lien, navigateur ou site injoignable), écran Elo classique.")
             if selection is not None:
                 ms = self.db.moments_by_ids(selection.keys())
                 choice = {int(k): v for k, v in selection.items()}

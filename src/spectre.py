@@ -302,23 +302,40 @@ def outro_frames(pseudo, fin=None, appel=""):
     f_credit = text_font(40)
     cta = gradient_pill(appel, 46, outline=True) if appel else None
     sym = Image.open(paths.res("assets", "symbole_72.png")).convert("RGBA").resize((48, 55), Image.LANCZOS)
-    m = re.match(r"^([+-]?\d[\d  ]*)\s*(.*)$", (fin or {}).get("ligne1", ""))
+    m = re.match(r"^([+-]\d[\d  ]*)\s*(.*)$", (fin or {}).get("ligne1", ""))
     delta = None
     rest = (fin or {}).get("ligne1", "")
     if m:
         delta = int(re.sub(r"\D", "", m.group(1)) or 0) * (-1 if m.group(1).startswith("-") else 1)
         rest = re.sub(r"^ELO\s*", "", m.group(2), flags=re.I)
+    card = None
+    if fin and fin.get("overlay") and os.path.isfile(fin["overlay"]):
+        # overlay FaceitSync capturé : il remplace le bloc Elo
+        try:
+            card = Image.open(fin["overlay"]).convert("RGBA")
+            cw = 960
+            if card.width != cw:
+                card = card.resize((cw, max(1, int(card.height * cw / card.width))), Image.LANCZOS)
+        except Exception:
+            card = None
     n = int(OUTRO_S * FPS)
     for i in range(n):
         t = i / FPS
         img = bg.copy().convert("RGBA")
         d = ImageDraw.Draw(img)
-        y = 520
+        y = 520 if card is None else 470
         if wm is not None:
             q = ease_out((t - 0.05) / 0.35)
             img.alpha_composite(with_alpha(wm, q), (int((W - wm.width) / 2), int(y + 50 * (1 - q))))
             y += wm.height + 120
-        if fin:
+        if card is not None:
+            q = ease_out((t - 0.3) / 0.4)
+            sc = 0.92 + 0.08 * q
+            cw, ch = max(1, int(card.width * sc)), max(1, int(card.height * sc))
+            img.alpha_composite(with_alpha(card.resize((cw, ch), Image.BILINEAR), q),
+                                ((W - cw) // 2, int(y + 40 * (1 - q))))
+            y += card.height + 140
+        elif fin:
             q = ease_out((t - 0.35) / 0.3)
             if delta is not None:
                 v = int(round(delta * ease_out((t - 0.35) / 0.9)))
@@ -331,10 +348,13 @@ def outro_frames(pseudo, fin=None, appel=""):
                 else:
                     img.alpha_composite(with_alpha(txt, q), (int((W - txt.width) / 2), int(y + 40 * (1 - q))))
             else:
-                tw = d.textlength(rest, font=f_mid)
-                d.text(((W - tw) / 2, y + 40), rest, font=f_mid, fill=WHITE + (int(255 * q),))
-                rest = ""
-            if rest:
+                # pas d'écart d'Elo connu : l'Elo actuel en grand (« 1 100 ELO »), sans « + »
+                big_txt = gradient_text(fin.get("ligne1", ""), f_elo) if fin.get("ligne1") else None
+                if big_txt is not None:
+                    if big_txt.width > W - 80:
+                        big_txt = big_txt.resize((W - 80, int(big_txt.height * (W - 80) / big_txt.width)), Image.LANCZOS)
+                    img.alpha_composite(with_alpha(big_txt, q), (int((W - big_txt.width) / 2), int(y + 40 * (1 - q))))
+            if rest and delta is not None:
                 tw = d.textlength(rest.upper(), font=f_mid)
                 d.text(((W - tw) / 2, y + 190), rest.upper(), font=f_mid, fill=WHITE + (int(255 * q),))
             if fin.get("ligne2") and t > 0.75:

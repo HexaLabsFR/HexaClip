@@ -7,3 +7,5 @@ HexaClip 0.4.0 — clips à partir de tes démos
 - Rendu basé sur le module CS2 de CS Demo Manager (AkiVer, licence MIT).
 - Capture : si l'écran capté se fige (image bloquée) ou prend du retard, HexaClip relance la capture tout seul. Avant : clips à l'image figée et « Clip perdu : passage plus ancien que le tampon ».
 - Anciens clips : contrôlés une fois au lancement. Ceux dont la lecture restait bloquée sur la première image sont réparés ; ceux dont l'image était figée sont écartés des compils (filtre « Images figées » dans Clips pour les supprimer d'un coup).
+- Écran de fin : colle le lien de ton overlay FaceitSync dans Réglages > Compils TikTok. La fin des compils affiche alors la même carte que sur ton stream (niveau, Elo, classement, variation du jour, derniers matchs, stats de la session, dernier match), à jour au moment du montage. Bouton « Voir l'aperçu de l'écran de fin ».
+- Correctif : l'écran de fin affichait l'Elo actuel comme un gain (« +1100 ELO »). Il affiche maintenant « 1 100 ELO », et « +75 ELO » seulement quand c'est vraiment ce que tu as gagné.
